@@ -159,3 +159,7 @@ make test          # go test ./...
 make lint          # go vet + gofmt check
 make cover         # coverage summary
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
