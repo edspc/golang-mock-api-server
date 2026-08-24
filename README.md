@@ -1,5 +1,7 @@
 # mockapi
 
+[![CI](https://github.com/edspc/golang-mock-api-server/actions/workflows/ci.yml/badge.svg)](https://github.com/edspc/golang-mock-api-server/actions/workflows/ci.yml)
+
 A service for **callback endpoints**: ask it for a URL, hand that URL to a
 third party, watch what they actually send, then write the response and
 validation logic for the requests that follow.
