@@ -1,0 +1,232 @@
+package server
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/edspc/golang-mock-api-server/internal/endpoint"
+	"github.com/edspc/golang-mock-api-server/internal/mock"
+)
+
+// CallbackPrefix is where dynamically created callback endpoints are served:
+// /cb/{uuid} plus any sub-path.
+const CallbackPrefix = "/cb/"
+
+// serveCallback dispatches traffic aimed at a callback endpoint. Everything
+// below /cb/{id} belongs to that endpoint, and the remainder of the path is
+// what the endpoint's rules match against.
+func (s *Server) serveCallback(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, CallbackPrefix)
+	id, sub, _ := strings.Cut(rest, "/")
+
+	ep, err := s.endpoints.Get(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "unknown callback endpoint",
+			"id":    id,
+		})
+		return
+	}
+
+	subPath := "/" + sub
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	if err != nil {
+		s.log.Warn("read callback body", "endpoint", id, "error", err)
+		body = nil
+	}
+
+	out := ep.Handle(r, subPath, body)
+
+	if d := out.Response.Delay.Duration(); d > 0 && !sleep(r, d) {
+		return
+	}
+
+	data := mock.NewRenderData(r, out.Params).WithBody(body)
+	rendered, err := mock.Render(out.Response.Body, data)
+	if err != nil {
+		s.log.Error("render callback response", "endpoint", id, "rule", out.Rule, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "callback response template failed: " + err.Error(),
+		})
+		return
+	}
+
+	header := w.Header()
+	for k, v := range out.Response.Headers {
+		header.Set(k, v)
+	}
+	if len(rendered) > 0 && header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(out.Response.Status)
+	if len(rendered) > 0 && r.Method != http.MethodHead {
+		if _, err := w.Write(rendered); err != nil {
+			s.log.Warn("write callback response", "endpoint", id, "error", err)
+		}
+	}
+
+	s.log.Info("callback",
+		"endpoint", id, "method", r.Method, "path", r.URL.Path,
+		"rule", out.Rule, "status", out.Response.Status,
+		"validationErrors", len(out.ValidationErrors))
+}
+
+// endpointView is the control-API projection of an endpoint.
+type endpointView struct {
+	ID        string        `json:"id"`
+	Name      string        `json:"name,omitempty"`
+	URL       string        `json:"url"`
+	CreatedAt string        `json:"createdAt"`
+	Received  int64         `json:"received"`
+	Spec      endpoint.Spec `json:"spec"`
+}
+
+func viewOf(e *endpoint.Endpoint) endpointView {
+	return endpointView{
+		ID:        e.ID.String(),
+		Name:      e.Name,
+		URL:       CallbackPrefix + e.ID.String(),
+		CreatedAt: e.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
+		Received:  e.Received(),
+		Spec:      e.Spec(),
+	}
+}
+
+// registerEndpointAdmin adds the endpoint-management routes to the control mux.
+func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
+	mux.HandleFunc("POST "+AdminPrefix+"endpoints", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name string         `json:"name"`
+			Spec *endpoint.Spec `json:"spec"`
+		}
+		// An empty body is a valid "just give me a URL" request.
+		if err := decodeOptionalJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ep, err := s.endpoints.Create(req.Name)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if req.Spec != nil {
+			if err := ep.SetSpec(*req.Spec); err != nil {
+				// Roll back rather than leave an endpoint the caller never
+				// successfully configured.
+				_ = s.endpoints.Delete(ep.ID.String())
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		s.log.Info("endpoint created", "id", ep.ID.String(), "name", ep.Name)
+		writeJSON(w, http.StatusCreated, viewOf(ep))
+	})
+
+	mux.HandleFunc("GET "+AdminPrefix+"endpoints", func(w http.ResponseWriter, r *http.Request) {
+		list := s.endpoints.List()
+		views := make([]endpointView, 0, len(list))
+		for _, e := range list {
+			views = append(views, viewOf(e))
+		}
+		writeJSON(w, http.StatusOK, views)
+	})
+
+	mux.HandleFunc("GET "+AdminPrefix+"endpoints/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ep, ok := s.lookup(w, r)
+		if !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, viewOf(ep))
+	})
+
+	mux.HandleFunc("DELETE "+AdminPrefix+"endpoints/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.endpoints.Delete(r.PathValue("id")); err != nil {
+			writeNotFound(w, r.PathValue("id"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	})
+
+	// PUT replaces the whole spec: rules, validation, and default response.
+	mux.HandleFunc("PUT "+AdminPrefix+"endpoints/{id}/spec", func(w http.ResponseWriter, r *http.Request) {
+		ep, ok := s.lookup(w, r)
+		if !ok {
+			return
+		}
+		var spec endpoint.Spec
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&spec); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parse spec: " + err.Error()})
+			return
+		}
+		if err := ep.SetSpec(spec); err != nil {
+			// The previous spec keeps serving: a bad edit must not break an
+			// endpoint a third party is already calling.
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		s.log.Info("endpoint spec updated", "id", ep.ID.String(), "rules", len(spec.Rules))
+		writeJSON(w, http.StatusOK, viewOf(ep))
+	})
+
+	mux.HandleFunc("GET "+AdminPrefix+"endpoints/{id}/requests", func(w http.ResponseWriter, r *http.Request) {
+		ep, ok := s.lookup(w, r)
+		if !ok {
+			return
+		}
+		entries := ep.Requests()
+		if only := r.URL.Query().Get("invalid"); only == "true" {
+			filtered := make([]mock.Entry, 0, len(entries))
+			for _, e := range entries {
+				if len(e.ValidationErrors) > 0 {
+					filtered = append(filtered, e)
+				}
+			}
+			entries = filtered
+		}
+		writeJSON(w, http.StatusOK, entries)
+	})
+
+	mux.HandleFunc("POST "+AdminPrefix+"endpoints/{id}/reset", func(w http.ResponseWriter, r *http.Request) {
+		ep, ok := s.lookup(w, r)
+		if !ok {
+			return
+		}
+		ep.ResetRequests()
+		writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
+	})
+}
+
+func (s *Server) lookup(w http.ResponseWriter, r *http.Request) (*endpoint.Endpoint, bool) {
+	id := r.PathValue("id")
+	ep, err := s.endpoints.Get(id)
+	if err != nil {
+		writeNotFound(w, id)
+		return nil, false
+	}
+	return ep, true
+}
+
+func writeNotFound(w http.ResponseWriter, id string) {
+	writeJSON(w, http.StatusNotFound, map[string]string{
+		"error": endpoint.ErrNotFound.Error(),
+		"id":    id,
+	})
+}
+
+// decodeOptionalJSON decodes a request body that is allowed to be empty.
+func decodeOptionalJSON(r *http.Request, v any) error {
+	dec := json.NewDecoder(io.LimitReader(r.Body, MaxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}

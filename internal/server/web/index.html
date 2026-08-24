@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mockapi</title>
+<!-- The server substitutes the control-API prefix here at startup, so the
+     console never hardcodes it. -->
+<meta name="api-base" content="__API_BASE__">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#128225;</text></svg>">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">mockapi</span>
+    <span class="health" id="health"></span>
+  </div>
+</header>
+
+<main>
+  <section id="view-endpoints" class="view is-active">
+    <aside class="sidebar">
+      <form id="create-form" class="create">
+        <input id="create-name" type="text" placeholder="Name (optional)" autocomplete="off">
+        <button type="submit" class="primary">New endpoint</button>
+      </form>
+      <div id="endpoint-list" class="endpoint-list"></div>
+    </aside>
+
+    <div class="detail">
+      <div id="empty-state" class="empty">
+        <h2>No endpoint selected</h2>
+        <p>Create a callback endpoint, hand its URL to a third party, and every
+           request it sends shows up here. Then write the response and
+           validation logic for the ones that follow.</p>
+      </div>
+
+      <div id="endpoint-detail" hidden>
+        <div class="detail-head">
+          <div>
+            <h2 id="ep-name"></h2>
+            <div class="url-row">
+              <code id="ep-url" class="url"></code>
+              <button id="copy-url" class="ghost" title="Copy full URL">Copy</button>
+            </div>
+            <div class="meta">
+              <span>id <code id="ep-id"></code></span>
+              <span>created <span id="ep-created"></span></span>
+              <span><strong id="ep-received">0</strong> received</span>
+            </div>
+          </div>
+          <button id="delete-endpoint" class="danger">Delete</button>
+        </div>
+
+        <nav class="tabs">
+          <button class="tab is-active" data-tab="requests">Requests</button>
+          <button class="tab" data-tab="spec">Response &amp; validation</button>
+        </nav>
+
+        <div id="tab-requests" class="tabpanel is-active">
+          <div class="toolbar">
+            <label class="check"><input type="checkbox" id="filter-invalid"> Failed validation only</label>
+            <label class="check"><input type="checkbox" id="auto-refresh" checked> Auto-refresh</label>
+            <span class="spacer"></span>
+            <button id="refresh-requests" class="ghost">Refresh</button>
+            <button id="reset-requests" class="ghost">Clear history</button>
+          </div>
+          <div id="requests" class="requests"></div>
+        </div>
+
+        <div id="tab-spec" class="tabpanel">
+          <div class="toolbar">
+            <button id="save-spec" class="primary">Save spec</button>
+            <button id="reload-spec" class="ghost">Discard changes</button>
+            <button id="example-spec" class="ghost">Insert example</button>
+            <span class="spacer"></span>
+            <span id="spec-status" class="status"></span>
+          </div>
+          <div id="spec-error" class="error" hidden></div>
+          <textarea id="spec-editor" spellcheck="false" autocomplete="off"></textarea>
+          <details class="help">
+            <summary>What goes in here</summary>
+            <ul>
+              <li><code>validation</code> runs first. Failing requests are still
+                captured, with every reason attached, and get
+                <code>onFailure</code> (or 400 listing the reasons).</li>
+              <li><code>rules</code> are tried in order, first match wins. A rule
+                with no <code>path</code> matches any sub-path below the endpoint URL.</li>
+              <li><code>response</code> answers requests that validated but matched
+                no rule.</li>
+              <li>Response bodies are templates:
+                <code>{{.Body.event}}</code>, <code>{{.Body.data.id}}</code>,
+                <code>{{.Path.id}}</code>, <code>{{.Query.source}}</code>,
+                <code>{{.Header.XApiKey}}</code>, <code>{{now}}</code>.</li>
+              <li>Saving replaces the spec wholesale. If it is rejected, the
+                previous spec keeps serving.</li>
+            </ul>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
