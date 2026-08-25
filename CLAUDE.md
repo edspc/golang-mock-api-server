@@ -123,8 +123,7 @@ timestamps without touching the process-wide sequence.
 ### The console (`internal/server/web`)
 
 Plain HTML/CSS/JS, `//go:embed`ed into the binary (`ui.go`) so it works from
-any working directory — the same stdlib-only, no-dependency constraint as the
-Go side.
+any working directory. No build step, no framework, no npm.
 
 - Served from the site root, below `/api/` and `/cb/` in the dispatch order.
   Because it does not live under `AdminPrefix`, it cannot derive the control-API
@@ -136,14 +135,15 @@ Go side.
   template engine would try to execute.
 - It has no private routes: a feature that works in the console must work over
   curl.
-- The spec tab is split: `validation` is a form, everything else is the JSON
-  editor. The form covers **every** field of `endpoint.Validation`, including
-  the nested `onFailure` response — a form that could not represent part of a
-  saved spec would silently drop it on the next save. Adding a field to
-  `Validation` means adding a control here, or that field becomes unreachable
-  from the console. `saveSpec` merges the two halves, rejects a `validation`
-  key typed into the editor rather than ignoring it, and passes unknown keys
-  through so the server's `DisallowUnknownFields` still produces the error.
+- The whole spec is edited through forms; there is no JSON editor left. The
+  forms therefore cover **every** field the server knows — validation, each
+  rule's matcher and response, and the default response. A control that could
+  not represent part of a saved spec would silently drop it on the next save,
+  so adding a field to `config.Rule`, `config.Response` or
+  `endpoint.Validation` means adding a control here. `importSpec` enforces the
+  same contract from the other side: it rejects any key the forms cannot
+  render rather than losing it. Read paths emit keys in the Go field order so
+  an exported file is byte-identical to what the API returns.
 - **Captured request data is attacker-controlled** (anyone who can reach a
   callback URL writes it). Everything rendered from the API goes into the DOM
   via `textContent`/`el()`, never `innerHTML`. A browser test asserts that a
