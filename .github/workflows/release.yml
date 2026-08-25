@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Creating the release needs write access; nothing else here does.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # A tag should never publish something that does not pass CI.
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: go test ./... -race -count=1
+
+      # CGO_ENABLED=0 is what makes this a plain cross-compile loop rather than
+      # a matrix of runners: the SQLite driver is pure Go.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in \
+            linux/amd64 linux/arm64 linux/arm \
+            darwin/amd64 darwin/arm64 \
+            windows/amd64 windows/arm64
+          do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="mockapi_${VERSION}_${os}_${arch}"
+            bin="mockapi"
+            [ "$os" = "windows" ] && bin="mockapi.exe"
+
+            echo "building $target"
+            GOOS="$os" GOARCH="$arch" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "dist/$bin" ./cmd/mockapi
+
+            cp LICENSE README.md dist/
+            if [ "$os" = "windows" ]; then
+              (cd dist && zip -q "$name.zip" "$bin" LICENSE README.md)
+            else
+              (cd dist && tar -czf "$name.tar.gz" "$bin" LICENSE README.md)
+            fi
+            rm -f "dist/$bin" dist/LICENSE dist/README.md
+          done
+
+          # One checksum file covering every archive, so a download can be
+          # verified without trusting the release page.
+          (cd dist && sha256sum ./* > SHA256SUMS)
+          ls -l dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release create "$VERSION" dist/* \
+            --title "$VERSION" \
+            --generate-notes \
+            --verify-tag
