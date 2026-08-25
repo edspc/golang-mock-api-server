@@ -78,25 +78,83 @@
             <span id="spec-status" class="status"></span>
           </div>
           <div id="spec-error" class="error" hidden></div>
-          <textarea id="spec-editor" spellcheck="false" autocomplete="off"></textarea>
-          <details class="help">
-            <summary>What goes in here</summary>
-            <ul>
-              <li><code>validation</code> runs first. Failing requests are still
-                captured, with every reason attached, and get
-                <code>onFailure</code> (or 400 listing the reasons).</li>
-              <li><code>rules</code> are tried in order, first match wins. A rule
-                with no <code>path</code> matches any sub-path below the endpoint URL.</li>
-              <li><code>response</code> answers requests that validated but matched
-                no rule.</li>
-              <li>Response bodies are templates:
-                <code>{{.Body.event}}</code>, <code>{{.Body.data.id}}</code>,
-                <code>{{.Path.id}}</code>, <code>{{.Query.source}}</code>,
-                <code>{{.Header.XApiKey}}</code>, <code>{{now}}</code>.</li>
-              <li>Saving replaces the spec wholesale. If it is rejected, the
-                previous spec keeps serving.</li>
-            </ul>
-          </details>
+
+          <section class="form-section">
+            <h3>Validation</h3>
+            <p class="hint">Checked before any rule. A callback that fails is
+              still captured, with every reason attached. Leave everything empty
+              to accept whatever arrives.</p>
+
+            <div class="field">
+              <label>Required headers</label>
+              <div id="v-headers" class="rows"></div>
+              <button type="button" class="ghost add" id="add-v-header">+ header</button>
+              <p class="hint">Leave the value empty to require only that the header is present.</p>
+            </div>
+
+            <div class="field">
+              <label>Required query parameters</label>
+              <div id="v-query" class="rows"></div>
+              <button type="button" class="ghost add" id="add-v-query">+ parameter</button>
+            </div>
+
+            <div class="field">
+              <label>Required JSON body fields</label>
+              <div id="v-fields" class="rows"></div>
+              <button type="button" class="ghost add" id="add-v-field">+ field</button>
+              <p class="hint">Dotted paths, e.g. <code>data.id</code>. Any field here also requires the body to be JSON.</p>
+            </div>
+
+            <div class="field">
+              <label for="v-body-contains">Body must contain</label>
+              <input id="v-body-contains" type="text" placeholder="substring of the raw body" autocomplete="off">
+            </div>
+
+            <label class="check"><input type="checkbox" id="v-json-body"> Body must be valid JSON</label>
+
+            <details id="v-onfailure" class="sub">
+              <summary>Failure response <span class="hint">— default is 400 listing every reason</span></summary>
+              <div class="sub-body">
+                <div class="field inline">
+                  <label for="v-fail-status">Status</label>
+                  <input id="v-fail-status" type="number" min="100" max="599" placeholder="400" autocomplete="off">
+                  <label for="v-fail-delay">Delay</label>
+                  <input id="v-fail-delay" type="text" placeholder="e.g. 250ms" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label>Headers</label>
+                  <div id="v-fail-headers" class="rows"></div>
+                  <button type="button" class="ghost add" id="add-v-fail-header">+ header</button>
+                </div>
+                <div class="field">
+                  <label for="v-fail-body">Body (JSON)</label>
+                  <textarea id="v-fail-body" class="small" spellcheck="false" autocomplete="off"
+                            placeholder='{"error": "bad payload"}'></textarea>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section class="form-section">
+            <h3>Rules &amp; default response</h3>
+            <p class="hint">Everything except validation, as JSON.</p>
+            <textarea id="spec-editor" spellcheck="false" autocomplete="off"></textarea>
+            <details class="help">
+              <summary>What goes in here</summary>
+              <ul>
+                <li><code>rules</code> are tried in order, first match wins. A rule
+                  with no <code>path</code> matches any sub-path below the endpoint URL.</li>
+                <li><code>response</code> answers requests that validated but matched
+                  no rule.</li>
+                <li>Response bodies are templates:
+                  <code>{{.Body.event}}</code>, <code>{{.Body.data.id}}</code>,
+                  <code>{{.Path.id}}</code>, <code>{{.Query.source}}</code>,
+                  <code>{{.Header.XApiKey}}</code>, <code>{{now}}</code>.</li>
+                <li>Saving replaces the spec wholesale. If it is rejected, the
+                  previous spec keeps serving.</li>
+              </ul>
+            </details>
+          </section>
         </div>
       </div>
     </div>
