@@ -76,7 +76,9 @@ captured requests. Files are created on first use.
 ## The console
 
 At `/`: create endpoints, watch requests arrive live, inspect each one's
-headers, query and body, and edit the response and validation logic in place.
+headers, query and body, and build the validation, rules and responses through
+forms — no JSON typing, with import and export for moving a spec between
+endpoints.
 It is compiled into the binary — no build step, no npm, nothing to serve
 separately — and is a pure client of the API below, so anything it does you can
 also do with curl.
@@ -87,7 +89,8 @@ Each endpoint is identified by a **UUIDv8** and served at `/cb/{id}`. Any
 sub-path below it belongs to the same endpoint, so a provider that posts to
 `/cb/{id}/success` and `/cb/{id}/failure` lands on one endpoint with two rules.
 
-Endpoints live in memory: they do not survive a restart.
+Endpoints live in memory unless a database is configured (see
+[Storage](#storage)).
 
 | Endpoint | Purpose |
 | --- | --- |
