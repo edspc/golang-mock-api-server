@@ -229,6 +229,9 @@ pre {
 
 .muted { color: var(--muted); padding: 14px 2px; font-size: 13px; }
 
+/* Line the sidebar's empty state up with the endpoint rows that replace it. */
+#endpoint-list .muted { padding-left: 12px; }
+
 /* Spec form */
 .form-section { margin-bottom: 26px; }
 .form-section h3 { font-size: 14px; margin: 0 0 4px; }
