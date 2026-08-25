@@ -35,30 +35,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          for target in \
-            linux/amd64 linux/arm64 linux/arm \
-            darwin/amd64 darwin/arm64 \
-            windows/amd64 windows/arm64
-          do
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
             os="${target%/*}"
             arch="${target#*/}"
             name="mockapi_${VERSION}_${os}_${arch}"
-            bin="mockapi"
-            [ "$os" = "windows" ] && bin="mockapi.exe"
 
             echo "building $target"
             GOOS="$os" GOARCH="$arch" go build \
               -trimpath \
               -ldflags "-s -w -X main.version=${VERSION}" \
-              -o "dist/$bin" ./cmd/mockapi
+              -o dist/mockapi ./cmd/mockapi
 
             cp LICENSE README.md dist/
-            if [ "$os" = "windows" ]; then
-              (cd dist && zip -q "$name.zip" "$bin" LICENSE README.md)
-            else
-              (cd dist && tar -czf "$name.tar.gz" "$bin" LICENSE README.md)
-            fi
-            rm -f "dist/$bin" dist/LICENSE dist/README.md
+            (cd dist && tar -czf "$name.tar.gz" mockapi LICENSE README.md)
+            rm -f dist/mockapi dist/LICENSE dist/README.md
           done
 
           # One checksum file covering every archive, so a download can be
