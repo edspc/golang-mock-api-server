@@ -111,6 +111,14 @@ Go side.
   template engine would try to execute.
 - It has no private routes: a feature that works in the console must work over
   curl.
+- The spec tab is split: `validation` is a form, everything else is the JSON
+  editor. The form covers **every** field of `endpoint.Validation`, including
+  the nested `onFailure` response — a form that could not represent part of a
+  saved spec would silently drop it on the next save. Adding a field to
+  `Validation` means adding a control here, or that field becomes unreachable
+  from the console. `saveSpec` merges the two halves, rejects a `validation`
+  key typed into the editor rather than ignoring it, and passes unknown keys
+  through so the server's `DisallowUnknownFields` still produces the error.
 - **Captured request data is attacker-controlled** (anyone who can reach a
   callback URL writes it). Everything rendered from the API goes into the DOM
   via `textContent`/`el()`, never `innerHTML`. A browser test asserts that a

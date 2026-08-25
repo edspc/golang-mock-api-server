@@ -304,9 +304,150 @@ function kvList(map) {
   return el('div', { class: 'kv' }, rows);
 }
 
-/* ---------- spec editor ---------- */
+/* ---------- validation form ---------- */
 
-const EXAMPLE_SPEC = {
+// The validation form covers every field of the Validation struct, including
+// the nested failure response. That is deliberate: a form that could not
+// represent part of a saved spec would silently drop it on the next save.
+
+// makeRow appends one removable row of text inputs to a list.
+function makeRow(list, fields) {
+  const inputs = fields.map((f) => {
+    const input = el('input', { type: 'text', placeholder: f.placeholder, autocomplete: 'off' });
+    input.value = f.value || '';
+    input.addEventListener('input', () => setSpecDirty(true));
+    return input;
+  });
+  const row = el('div', { class: 'row' });
+  for (const input of inputs) row.appendChild(input);
+  row.appendChild(el('button', {
+    type: 'button',
+    class: 'ghost row-del',
+    title: 'Remove',
+    text: '\u00d7',
+    onclick: () => { row.remove(); setSpecDirty(true); },
+  }));
+  list.appendChild(row);
+  return row;
+}
+
+function addHeaderRow(name, value) {
+  makeRow($('v-headers'), [
+    { placeholder: 'X-Signature', value: name },
+    { placeholder: 'value (optional)', value: value },
+  ]);
+}
+
+function addQueryRow(name) {
+  makeRow($('v-query'), [{ placeholder: 'source', value: name }]);
+}
+
+function addFieldRow(path) {
+  makeRow($('v-fields'), [{ placeholder: 'data.id', value: path }]);
+}
+
+function addFailHeaderRow(name, value) {
+  makeRow($('v-fail-headers'), [
+    { placeholder: 'Content-Type', value: name },
+    { placeholder: 'application/json', value: value },
+  ]);
+}
+
+// rowValues returns the trimmed inputs of each row in a list.
+function rowValues(id) {
+  return Array.from($(id).querySelectorAll('.row')).map((row) =>
+    Array.from(row.querySelectorAll('input')).map((i) => i.value.trim()));
+}
+
+function renderValidationForm(validation) {
+  const v = validation || {};
+  for (const id of ['v-headers', 'v-query', 'v-fields', 'v-fail-headers']) clear($(id));
+
+  for (const entry of v.requireHeaders || []) {
+    // The wire format is "Name" or "Name: value".
+    const i = entry.indexOf(':');
+    if (i >= 0) addHeaderRow(entry.slice(0, i).trim(), entry.slice(i + 1).trim());
+    else addHeaderRow(entry.trim(), '');
+  }
+  for (const q of v.requireQuery || []) addQueryRow(q);
+  for (const f of v.requireFields || []) addFieldRow(f);
+
+  $('v-body-contains').value = v.bodyContains || '';
+  $('v-json-body').checked = !!v.jsonBody;
+
+  const fail = v.onFailure || {};
+  $('v-fail-status').value = fail.status || '';
+  $('v-fail-delay').value = fail.delay || '';
+  for (const [name, value] of Object.entries(fail.headers || {})) addFailHeaderRow(name, value);
+  $('v-fail-body').value = fail.body === undefined ? '' : JSON.stringify(fail.body, null, 2);
+  $('v-onfailure').open = !!v.onFailure;
+}
+
+// readFailureForm throws with a readable message rather than sending something
+// the server would reject with a parse error.
+function readFailureForm() {
+  const r = {};
+
+  const status = $('v-fail-status').value.trim();
+  if (status) {
+    const n = Number(status);
+    if (!Number.isInteger(n) || n < 100 || n > 599) {
+      throw new Error(`Failure response status must be between 100 and 599, got "${status}".`);
+    }
+    r.status = n;
+  }
+
+  const delay = $('v-fail-delay').value.trim();
+  if (delay) r.delay = delay;
+
+  const headers = {};
+  for (const [name, value] of rowValues('v-fail-headers')) {
+    if (name) headers[name] = value;
+  }
+  if (Object.keys(headers).length) r.headers = headers;
+
+  const body = $('v-fail-body').value.trim();
+  if (body) {
+    try {
+      r.body = JSON.parse(body);
+    } catch (e) {
+      throw new Error('Failure response body is not valid JSON: ' + e.message);
+    }
+  }
+
+  return Object.keys(r).length ? r : null;
+}
+
+// readValidationForm returns null when nothing is configured, so an emptied
+// form removes validation from the spec rather than saving an empty object.
+function readValidationForm() {
+  const v = {};
+
+  const headers = rowValues('v-headers')
+    .filter(([name]) => name)
+    .map(([name, value]) => (value ? `${name}: ${value}` : name));
+  if (headers.length) v.requireHeaders = headers;
+
+  const query = rowValues('v-query').map(([name]) => name).filter(Boolean);
+  if (query.length) v.requireQuery = query;
+
+  const fields = rowValues('v-fields').map(([path]) => path).filter(Boolean);
+  if (fields.length) v.requireFields = fields;
+
+  const contains = $('v-body-contains').value.trim();
+  if (contains) v.bodyContains = contains;
+
+  if ($('v-json-body').checked) v.jsonBody = true;
+
+  const onFailure = readFailureForm();
+  if (onFailure) v.onFailure = onFailure;
+
+  return Object.keys(v).length ? v : null;
+}
+
+/* ---------- spec ---------- */
+
+const EXAMPLE = {
   validation: {
     requireHeaders: ['X-Signature'],
     requireFields: ['event'],
@@ -322,10 +463,21 @@ const EXAMPLE_SPEC = {
   response: { status: 204 },
 };
 
+// The editor holds everything except validation, which the form owns.
+function rulesJSON(spec) {
+  const rest = {};
+  for (const [k, v] of Object.entries(spec || {})) {
+    if (k !== 'validation') rest[k] = v;
+  }
+  return JSON.stringify(rest, null, 2);
+}
+
 function loadSpecIntoEditor() {
   const ep = selectedEndpoint();
   if (!ep) return;
-  $('spec-editor').value = JSON.stringify(ep.spec || {}, null, 2);
+  const spec = ep.spec || {};
+  renderValidationForm(spec.validation);
+  $('spec-editor').value = rulesJSON(spec);
   setSpecDirty(false);
   hideSpecError();
 }
@@ -346,23 +498,44 @@ function hideSpecError() { $('spec-error').hidden = true; }
 async function saveSpec() {
   const ep = selectedEndpoint();
   if (!ep) return;
-  const raw = $('spec-editor').value.trim() || '{}';
 
-  // Catch malformed JSON here so the user gets the parse position, then let
-  // the server have the final say on the contents.
+  let validation;
   try {
-    JSON.parse(raw);
+    validation = readValidationForm();
   } catch (e) {
-    showSpecError('Invalid JSON: ' + e.message);
+    showSpecError(e.message);
     return;
   }
 
+  // Catch malformed JSON here so the user gets the parse position, then let
+  // the server have the final say on the contents.
+  let rest;
   try {
-    const updated = await api('PUT', `${API}/endpoints/${ep.id}/spec`, raw);
+    rest = JSON.parse($('spec-editor').value.trim() || '{}');
+  } catch (e) {
+    showSpecError('Rules & default response: invalid JSON — ' + e.message);
+    return;
+  }
+  if (rest === null || typeof rest !== 'object' || Array.isArray(rest)) {
+    showSpecError('Rules & default response must be a JSON object.');
+    return;
+  }
+  if (rest.validation !== undefined) {
+    showSpecError('Validation is edited in the form above. Remove "validation" from the rules JSON.');
+    return;
+  }
+
+  // Unknown keys are passed through rather than dropped, so the server rejects
+  // a typo with the same message it always did.
+  const spec = {};
+  if (validation) spec.validation = validation;
+  Object.assign(spec, rest);
+
+  try {
+    const updated = await api('PUT', `${API}/endpoints/${ep.id}/spec`, JSON.stringify(spec));
     hideSpecError();
-    setSpecDirty(false);
     Object.assign(ep, updated);
-    $('spec-editor').value = JSON.stringify(updated.spec || {}, null, 2);
+    loadSpecIntoEditor();
     toast('Spec saved');
   } catch (e) {
     // The endpoint keeps serving its previous spec, so nothing is broken.
@@ -466,9 +639,21 @@ function wire() {
   $('save-spec').addEventListener('click', saveSpec);
   $('reload-spec').addEventListener('click', loadSpecIntoEditor);
   $('example-spec').addEventListener('click', () => {
-    $('spec-editor').value = JSON.stringify(EXAMPLE_SPEC, null, 2);
+    renderValidationForm(EXAMPLE.validation);
+    $('spec-editor').value = rulesJSON(EXAMPLE);
     setSpecDirty(true);
   });
+
+  $('add-v-header').addEventListener('click', () => { addHeaderRow('', ''); setSpecDirty(true); });
+  $('add-v-query').addEventListener('click', () => { addQueryRow(''); setSpecDirty(true); });
+  $('add-v-field').addEventListener('click', () => { addFieldRow(''); setSpecDirty(true); });
+  $('add-v-fail-header').addEventListener('click', () => { addFailHeaderRow('', ''); setSpecDirty(true); });
+
+  // Every standalone validation control marks the spec dirty.
+  for (const id of ['v-body-contains', 'v-json-body', 'v-fail-status', 'v-fail-delay', 'v-fail-body']) {
+    $(id).addEventListener('input', () => setSpecDirty(true));
+    $(id).addEventListener('change', () => setSpecDirty(true));
+  }
 
 
   // Ctrl/Cmd+S saves the spec when the editor has focus.
