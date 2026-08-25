@@ -73,6 +73,30 @@ backing up, captured traffic is bulky and disposable. Each is independent —
 set one, the other, both or neither. Deleting an endpoint also drops its
 captured requests. Files are created on first use.
 
+### Sign-in
+
+Without Google credentials the control API is open, which is the default. Set
+them and managing endpoints requires signing in — **callback URLs stay open
+either way**, since a third party posting to `/cb/{id}` has no way to sign in.
+
+| Variable | Meaning |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | OAuth client id; sign-in is off unless set |
+| `GOOGLE_CLIENT_SECRET` | OAuth client secret |
+| `MOCKAPI_BASE_URL` | externally visible origin, e.g. `https://mock.example.com` (defaults to the listen address) |
+| `MOCKAPI_ALLOWED_EMAILS` | comma-separated addresses that may manage endpoints |
+| `MOCKAPI_ALLOWED_DOMAIN` | a whole domain that may, e.g. `example.com` |
+
+Register `{MOCKAPI_BASE_URL}/api/auth/callback` as the redirect URI in the
+Google console; the startup log prints the exact value.
+
+At least one of `MOCKAPI_ALLOWED_EMAILS` or `MOCKAPI_ALLOWED_DOMAIN` is
+required — the server refuses to start otherwise, because sign-in with no
+allowlist would let any Google account on earth manage your endpoints. The
+allowlist is re-checked on every request, so removing someone takes effect
+immediately. Sessions are signed cookies valid for 12 hours and end with the
+process.
+
 ## The console
 
 At `/`: create endpoints, watch requests arrive live, inspect each one's

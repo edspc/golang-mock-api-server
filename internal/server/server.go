@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/edspc/golang-mock-api-server/internal/auth"
 	"github.com/edspc/golang-mock-api-server/internal/endpoint"
 )
 
@@ -40,6 +41,8 @@ type Options struct {
 	// Endpoints is the callback-endpoint registry. Nil creates an empty one.
 	Endpoints *endpoint.Registry
 	Logger    *slog.Logger
+	// Auth guards the control API. Nil leaves it open, which is the default.
+	Auth *auth.Auth
 }
 
 // Server implements http.Handler. It serves three disjoint path spaces: /api/
@@ -49,7 +52,8 @@ type Options struct {
 type Server struct {
 	endpoints *endpoint.Registry
 	log       *slog.Logger
-	admin     *http.ServeMux
+	auth      *auth.Auth
+	admin     http.Handler
 	assets    http.Handler
 	assetFS   fs.FS
 	index     []byte
@@ -60,6 +64,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		endpoints: opts.Endpoints,
 		log:       opts.Logger,
+		auth:      opts.Auth,
 	}
 	if s.endpoints == nil {
 		s.endpoints = endpoint.NewRegistry(endpoint.DefaultHistory)
@@ -70,7 +75,11 @@ func New(opts Options) (*Server, error) {
 	s.assetFS = uiFS()
 	s.assets = http.FileServerFS(s.assetFS)
 	s.index = indexPage()
-	s.admin = s.adminMux()
+
+	// Only the control API is guarded. Callback traffic is dispatched in
+	// ServeHTTP before this handler and never passes through the guard: a
+	// third party posting to /cb/{id} cannot sign in, and must not have to.
+	s.admin = s.auth.Guard(AdminPrefix, s.adminMux())
 	return s, nil
 }
 

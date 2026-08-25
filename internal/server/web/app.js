@@ -16,6 +16,7 @@ const state = {
   selectedId: null,
   filterInvalid: false,
   auto: true,
+  auth: true,
   expanded: new Set(),
   lastRequestsJSON: '',
   specDirty: false,
@@ -67,10 +68,54 @@ async function api(method, path, rawBody) {
   if (text) {
     try { data = JSON.parse(text); } catch (e) { data = null; }
   }
+  if (res.status === 401) {
+    // The session expired or was never there: stop the polling loop and show
+    // the sign-in screen rather than a wall of failed requests.
+    requireSignIn(data && data.login);
+    const err = new Error((data && data.error) || 'sign in to manage endpoints');
+    err.unauthorized = true;
+    throw err;
+  }
   if (!res.ok) {
     throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
   }
   return data;
+}
+
+/* ---------- sign-in ---------- */
+
+// requireSignIn shows the overlay. Callback URLs are unaffected by any of
+// this — only the control API is guarded.
+function requireSignIn(loginPath) {
+  state.auth = false;
+  $('signin-link').href = loginPath || `${API}/auth/login`;
+  $('signin').hidden = false;
+  $('account').hidden = true;
+  // Hidden, not merely covered: an opaque overlay still leaves the console
+  // behind it in the tab order.
+  document.querySelector('main').hidden = true;
+}
+
+async function loadAuth() {
+  let status;
+  try {
+    const res = await fetch(`${API}/auth/status`);
+    status = await res.json();
+  } catch (e) {
+    return false; // the server is unreachable; loadHealth reports it
+  }
+  if (status.enabled && !status.authenticated) {
+    requireSignIn();
+    return false;
+  }
+  state.auth = true;
+  $('signin').hidden = true;
+  document.querySelector('main').hidden = false;
+  if (status.enabled) {
+    $('account-email').textContent = status.email || '';
+    $('account').hidden = false;
+  }
+  return true;
 }
 
 function formatTime(iso) {
@@ -842,6 +887,13 @@ function wire() {
     }
   });
 
+  $('sign-out').addEventListener('click', async () => {
+    try {
+      await api('POST', `${API}/auth/logout`);
+    } catch (e) { /* signing out twice is not an error worth showing */ }
+    requireSignIn();
+  });
+
   $('save-spec').addEventListener('click', saveSpec);
   $('reload-spec').addEventListener('click', loadSpecIntoEditor);
   $('example-spec').addEventListener('click', () => {
@@ -891,7 +943,7 @@ function wire() {
 }
 
 async function poll() {
-  if (!state.auto || document.hidden) return;
+  if (!state.auto || document.hidden || !state.auth) return;
   await loadHealth();
   const previous = state.selectedId;
   await loadEndpoints();
@@ -902,6 +954,9 @@ async function poll() {
 }
 
 wire();
-loadHealth();
-loadEndpoints().catch((e) => toast(e.message));
+loadAuth().then((signedIn) => {
+  if (!signedIn) return;
+  loadHealth();
+  loadEndpoints().catch((e) => { if (!e.unauthorized) toast(e.message); });
+});
 setInterval(() => { poll().catch(() => {}); }, POLL_MS);

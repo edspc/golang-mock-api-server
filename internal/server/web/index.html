@@ -16,7 +16,22 @@
     <span class="logo">mockapi</span>
     <span class="health" id="health"></span>
   </div>
+  <span class="spacer"></span>
+  <span class="account" id="account" hidden>
+    <span id="account-email"></span>
+    <button id="sign-out" class="ghost">Sign out</button>
+  </span>
 </header>
+
+<div id="signin" class="signin" hidden>
+  <div class="signin-card">
+    <h2>Sign in to manage endpoints</h2>
+    <p>Callback URLs keep receiving traffic while you are signed out — only
+       creating and configuring endpoints needs an account.</p>
+    <p id="signin-error" class="error" hidden></p>
+    <a id="signin-link" class="primary signin-button" href="#">Continue with Google</a>
+  </div>
+</div>
 
 <main>
   <section id="view-endpoints" class="view is-active">
