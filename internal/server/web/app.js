@@ -304,32 +304,229 @@ function kvList(map) {
   return el('div', { class: 'kv' }, rows);
 }
 
-/* ---------- validation form ---------- */
+/* ---------- form widgets ---------- */
 
-// The validation form covers every field of the Validation struct, including
-// the nested failure response. That is deliberate: a form that could not
-// represent part of a saved spec would silently drop it on the next save.
+// The whole spec is edited through forms, so the forms must cover every field
+// the server knows. A control that could not represent part of a saved spec
+// would silently drop it on the next save; readSpec/renderSpec below are the
+// two halves of that contract, and importSpec rejects anything they cannot
+// round-trip rather than losing it quietly.
+
+const METHODS = ['', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+const SPEC_KEYS = ['validation', 'rules', 'response'];
+const VALIDATION_KEYS = ['requireHeaders', 'requireQuery', 'jsonBody', 'requireFields', 'bodyContains', 'onFailure'];
+const RULE_KEYS = ['name', 'request', 'response'];
+const REQUEST_KEYS = ['method', 'path', 'query', 'headers', 'bodyContains'];
+const RESPONSE_KEYS = ['status', 'headers', 'body', 'delay'];
+
+function dirty() { setSpecDirty(true); }
+
+// markDirty wires every control inside scope to the unsaved-changes marker.
+function markDirty(scope) {
+  for (const node of scope.querySelectorAll('input, textarea, select')) {
+    node.addEventListener('input', dirty);
+    node.addEventListener('change', dirty);
+  }
+  return scope;
+}
 
 // makeRow appends one removable row of text inputs to a list.
 function makeRow(list, fields) {
-  const inputs = fields.map((f) => {
+  const row = el('div', { class: 'row' });
+  for (const f of fields) {
     const input = el('input', { type: 'text', placeholder: f.placeholder, autocomplete: 'off' });
     input.value = f.value || '';
-    input.addEventListener('input', () => setSpecDirty(true));
-    return input;
-  });
-  const row = el('div', { class: 'row' });
-  for (const input of inputs) row.appendChild(input);
+    input.addEventListener('input', dirty);
+    row.appendChild(input);
+  }
   row.appendChild(el('button', {
-    type: 'button',
-    class: 'ghost row-del',
-    title: 'Remove',
-    text: '\u00d7',
-    onclick: () => { row.remove(); setSpecDirty(true); },
+    type: 'button', class: 'ghost row-del', title: 'Remove', text: '×',
+    onclick: () => { row.remove(); dirty(); },
   }));
   list.appendChild(row);
   return row;
 }
+
+// rowValues returns the trimmed inputs of each row in a list.
+function rowValues(list) {
+  return Array.from(list.querySelectorAll('.row')).map((row) =>
+    Array.from(row.querySelectorAll('input')).map((i) => i.value.trim()));
+}
+
+// kvField builds a labelled list of name/value rows plus its add button.
+function kvField(label, name, values, placeholders) {
+  const list = el('div', { class: 'rows', 'data-list': name });
+  for (const [k, v] of Object.entries(values || {})) {
+    makeRow(list, [{ placeholder: placeholders[0], value: k }, { placeholder: placeholders[1], value: v }]);
+  }
+  return el('div', { class: 'field' }, [
+    el('label', { text: label }),
+    list,
+    el('button', {
+      type: 'button', class: 'ghost add', text: '+ ' + placeholders[2],
+      onclick: () => { makeRow(list, [{ placeholder: placeholders[0] }, { placeholder: placeholders[1] }]); dirty(); },
+    }),
+  ]);
+}
+
+function readKV(list) {
+  const out = {};
+  for (const [name, value] of rowValues(list)) {
+    if (name) out[name] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/* ---------- response block (used for rules, the default, and on-failure) ---------- */
+
+function responseBlock(resp) {
+  const r = resp || {};
+
+  const status = el('input', { type: 'number', min: '100', max: '599', 'data-f': 'status', placeholder: '200' });
+  status.value = r.status || '';
+  const delay = el('input', { type: 'text', 'data-f': 'delay', placeholder: 'e.g. 250ms', autocomplete: 'off' });
+  delay.value = r.delay || '';
+  const body = el('textarea', { class: 'small', spellcheck: 'false', 'data-f': 'body', placeholder: '{"ok": true}' });
+  body.value = r.body === undefined ? '' : JSON.stringify(r.body, null, 2);
+
+  return markDirty(el('div', { class: 'resp-block' }, [
+    el('div', { class: 'field inline' }, [
+      el('label', { text: 'Status' }), status,
+      el('label', { text: 'Delay' }), delay,
+    ]),
+    kvField('Headers', 'headers', r.headers, ['Content-Type', 'application/json', 'header']),
+    el('div', { class: 'field' }, [el('label', { text: 'Body (JSON)' }), body]),
+  ]));
+}
+
+// readResponse returns null when nothing is filled in, so an untouched block
+// leaves the field out of the spec instead of saving an empty object.
+function readResponse(scope, label) {
+  const r = {};
+
+  const status = scope.querySelector('[data-f="status"]').value.trim();
+  if (status) {
+    const n = Number(status);
+    if (!Number.isInteger(n) || n < 100 || n > 599) {
+      throw new Error(`${label}: status must be between 100 and 599, got "${status}".`);
+    }
+    r.status = n;
+  }
+
+  // Keys are emitted in the server's field order, so an exported file is
+  // byte-identical to what the API returns and diffs cleanly.
+  const headers = readKV(scope.querySelector('[data-list="headers"]'));
+  if (headers) r.headers = headers;
+
+  const body = scope.querySelector('[data-f="body"]').value.trim();
+  if (body) {
+    try {
+      r.body = JSON.parse(body);
+    } catch (e) {
+      throw new Error(`${label}: body is not valid JSON — ${e.message}`);
+    }
+  }
+
+  const delay = scope.querySelector('[data-f="delay"]').value.trim();
+  if (delay) r.delay = delay;
+
+  return Object.keys(r).length ? r : null;
+}
+
+/* ---------- rules ---------- */
+
+function renumberRules() {
+  Array.from($('rules').children).forEach((card, i) => {
+    card.querySelector('.rule-index').textContent = `Rule ${i + 1}`;
+  });
+}
+
+function ruleCard(rule) {
+  const d = rule || {};
+  const req = d.request || {};
+
+  const name = el('input', { type: 'text', 'data-f': 'name', placeholder: 'name (optional)', autocomplete: 'off' });
+  name.value = d.name || '';
+
+  const method = el('select', { 'data-f': 'method' });
+  for (const m of METHODS) {
+    const opt = el('option', { value: m, text: m || 'ANY method' });
+    if ((req.method || '') === m) opt.selected = true;
+    method.appendChild(opt);
+  }
+
+  const path = el('input', { type: 'text', 'data-f': 'path', placeholder: '/success, /users/{id}, /*', autocomplete: 'off' });
+  path.value = req.path || '';
+  const contains = el('input', { type: 'text', 'data-f': 'bodyContains', placeholder: 'substring of the raw body', autocomplete: 'off' });
+  contains.value = req.bodyContains || '';
+
+  const card = el('div', { class: 'rule' });
+  const move = (delta) => {
+    const sibling = delta < 0 ? card.previousElementSibling : card.nextElementSibling;
+    if (!sibling) return;
+    if (delta < 0) card.parentNode.insertBefore(card, sibling);
+    else card.parentNode.insertBefore(sibling, card);
+    renumberRules();
+    dirty();
+  };
+
+  card.appendChild(el('div', { class: 'rule-head' }, [
+    el('span', { class: 'rule-index' }),
+    name,
+    el('button', { type: 'button', class: 'ghost row-del', text: '↑', title: 'Move up', onclick: () => move(-1) }),
+    el('button', { type: 'button', class: 'ghost row-del', text: '↓', title: 'Move down', onclick: () => move(1) }),
+    el('button', {
+      type: 'button', class: 'ghost row-del', text: '×', title: 'Remove rule',
+      onclick: () => { card.remove(); renumberRules(); dirty(); },
+    }),
+  ]));
+
+  card.appendChild(el('div', { class: 'rule-body' }, [
+    el('h4', { text: 'Matches when' }),
+    el('div', { class: 'field inline' }, [
+      el('label', { text: 'Method' }), method,
+      el('label', { text: 'Path' }), path,
+    ]),
+    kvField('Query parameters', 'req-query', req.query, ['source', '* or a value', 'parameter']),
+    kvField('Headers', 'req-headers', req.headers, ['X-Api-Key', '* or a value', 'header']),
+    el('div', { class: 'field' }, [el('label', { text: 'Body contains' }), contains]),
+    el('h4', { text: 'Then responds' }),
+    responseBlock(d.response),
+  ]));
+
+  markDirty(card.querySelector('.rule-head'));
+  markDirty(card.querySelector('.rule-body > .field.inline'));
+  contains.addEventListener('input', dirty);
+  return card;
+}
+
+function readRule(card, index) {
+  const label = `Rule ${index + 1}`;
+  const rule = {};
+
+  const name = card.querySelector('[data-f="name"]').value.trim();
+  if (name) rule.name = name;
+
+  const request = {};
+  const method = card.querySelector('[data-f="method"]').value;
+  if (method) request.method = method;
+  const path = card.querySelector('[data-f="path"]').value.trim();
+  if (path) request.path = path;
+  const query = readKV(card.querySelector('[data-list="req-query"]'));
+  if (query) request.query = query;
+  const headers = readKV(card.querySelector('[data-list="req-headers"]'));
+  if (headers) request.headers = headers;
+  const contains = card.querySelector('[data-f="bodyContains"]').value.trim();
+  if (contains) request.bodyContains = contains;
+  if (Object.keys(request).length) rule.request = request;
+
+  const response = readResponse(card.querySelector('.resp-block'), `${label} response`);
+  if (response) rule.response = response;
+
+  return rule;
+}
+
+/* ---------- validation ---------- */
 
 function addHeaderRow(name, value) {
   makeRow($('v-headers'), [
@@ -338,30 +535,12 @@ function addHeaderRow(name, value) {
   ]);
 }
 
-function addQueryRow(name) {
-  makeRow($('v-query'), [{ placeholder: 'source', value: name }]);
-}
-
-function addFieldRow(path) {
-  makeRow($('v-fields'), [{ placeholder: 'data.id', value: path }]);
-}
-
-function addFailHeaderRow(name, value) {
-  makeRow($('v-fail-headers'), [
-    { placeholder: 'Content-Type', value: name },
-    { placeholder: 'application/json', value: value },
-  ]);
-}
-
-// rowValues returns the trimmed inputs of each row in a list.
-function rowValues(id) {
-  return Array.from($(id).querySelectorAll('.row')).map((row) =>
-    Array.from(row.querySelectorAll('input')).map((i) => i.value.trim()));
-}
+function addQueryRow(name) { makeRow($('v-query'), [{ placeholder: 'source', value: name }]); }
+function addFieldRow(path) { makeRow($('v-fields'), [{ placeholder: 'data.id', value: path }]); }
 
 function renderValidationForm(validation) {
   const v = validation || {};
-  for (const id of ['v-headers', 'v-query', 'v-fields', 'v-fail-headers']) clear($(id));
+  for (const id of ['v-headers', 'v-query', 'v-fields']) clear($(id));
 
   for (const entry of v.requireHeaders || []) {
     // The wire format is "Name" or "Name: value".
@@ -375,77 +554,38 @@ function renderValidationForm(validation) {
   $('v-body-contains').value = v.bodyContains || '';
   $('v-json-body').checked = !!v.jsonBody;
 
-  const fail = v.onFailure || {};
-  $('v-fail-status').value = fail.status || '';
-  $('v-fail-delay').value = fail.delay || '';
-  for (const [name, value] of Object.entries(fail.headers || {})) addFailHeaderRow(name, value);
-  $('v-fail-body').value = fail.body === undefined ? '' : JSON.stringify(fail.body, null, 2);
+  const fail = $('v-fail-block');
+  clear(fail);
+  fail.appendChild(responseBlock(v.onFailure));
   $('v-onfailure').open = !!v.onFailure;
 }
 
-// readFailureForm throws with a readable message rather than sending something
-// the server would reject with a parse error.
-function readFailureForm() {
-  const r = {};
-
-  const status = $('v-fail-status').value.trim();
-  if (status) {
-    const n = Number(status);
-    if (!Number.isInteger(n) || n < 100 || n > 599) {
-      throw new Error(`Failure response status must be between 100 and 599, got "${status}".`);
-    }
-    r.status = n;
-  }
-
-  const delay = $('v-fail-delay').value.trim();
-  if (delay) r.delay = delay;
-
-  const headers = {};
-  for (const [name, value] of rowValues('v-fail-headers')) {
-    if (name) headers[name] = value;
-  }
-  if (Object.keys(headers).length) r.headers = headers;
-
-  const body = $('v-fail-body').value.trim();
-  if (body) {
-    try {
-      r.body = JSON.parse(body);
-    } catch (e) {
-      throw new Error('Failure response body is not valid JSON: ' + e.message);
-    }
-  }
-
-  return Object.keys(r).length ? r : null;
-}
-
-// readValidationForm returns null when nothing is configured, so an emptied
-// form removes validation from the spec rather than saving an empty object.
 function readValidationForm() {
   const v = {};
 
-  const headers = rowValues('v-headers')
+  const headers = rowValues($('v-headers'))
     .filter(([name]) => name)
     .map(([name, value]) => (value ? `${name}: ${value}` : name));
   if (headers.length) v.requireHeaders = headers;
 
-  const query = rowValues('v-query').map(([name]) => name).filter(Boolean);
+  const query = rowValues($('v-query')).map(([name]) => name).filter(Boolean);
   if (query.length) v.requireQuery = query;
 
-  const fields = rowValues('v-fields').map(([path]) => path).filter(Boolean);
+  if ($('v-json-body').checked) v.jsonBody = true;
+
+  const fields = rowValues($('v-fields')).map(([path]) => path).filter(Boolean);
   if (fields.length) v.requireFields = fields;
 
   const contains = $('v-body-contains').value.trim();
   if (contains) v.bodyContains = contains;
 
-  if ($('v-json-body').checked) v.jsonBody = true;
-
-  const onFailure = readFailureForm();
+  const onFailure = readResponse($('v-fail-block'), 'Failure response');
   if (onFailure) v.onFailure = onFailure;
 
   return Object.keys(v).length ? v : null;
 }
 
-/* ---------- spec ---------- */
+/* ---------- the whole spec ---------- */
 
 const EXAMPLE = {
   validation: {
@@ -463,28 +603,47 @@ const EXAMPLE = {
   response: { status: 204 },
 };
 
-// The editor holds everything except validation, which the form owns.
-function rulesJSON(spec) {
-  const rest = {};
-  for (const [k, v] of Object.entries(spec || {})) {
-    if (k !== 'validation') rest[k] = v;
-  }
-  return JSON.stringify(rest, null, 2);
+function renderSpecForm(spec) {
+  const s = spec || {};
+  renderValidationForm(s.validation);
+
+  clear($('rules'));
+  for (const rule of s.rules || []) $('rules').appendChild(ruleCard(rule));
+  renumberRules();
+
+  const def = $('default-response');
+  clear(def);
+  def.appendChild(responseBlock(s.response));
+}
+
+// readSpecForm throws with a readable message rather than sending something the
+// server would only reject with a parse error.
+function readSpecForm() {
+  const spec = {};
+
+  const validation = readValidationForm();
+  if (validation) spec.validation = validation;
+
+  const rules = Array.from($('rules').children).map(readRule);
+  if (rules.length) spec.rules = rules;
+
+  const response = readResponse($('default-response'), 'Default response');
+  if (response) spec.response = response;
+
+  return spec;
 }
 
 function loadSpecIntoEditor() {
   const ep = selectedEndpoint();
   if (!ep) return;
-  const spec = ep.spec || {};
-  renderValidationForm(spec.validation);
-  $('spec-editor').value = rulesJSON(spec);
+  renderSpecForm(ep.spec);
   setSpecDirty(false);
   hideSpecError();
 }
 
-function setSpecDirty(dirty) {
-  state.specDirty = dirty;
-  $('spec-status').textContent = dirty ? 'unsaved changes' : '';
+function setSpecDirty(isDirty) {
+  state.specDirty = isDirty;
+  $('spec-status').textContent = isDirty ? 'unsaved changes' : '';
 }
 
 function showSpecError(message) {
@@ -499,37 +658,13 @@ async function saveSpec() {
   const ep = selectedEndpoint();
   if (!ep) return;
 
-  let validation;
+  let spec;
   try {
-    validation = readValidationForm();
+    spec = readSpecForm();
   } catch (e) {
     showSpecError(e.message);
     return;
   }
-
-  // Catch malformed JSON here so the user gets the parse position, then let
-  // the server have the final say on the contents.
-  let rest;
-  try {
-    rest = JSON.parse($('spec-editor').value.trim() || '{}');
-  } catch (e) {
-    showSpecError('Rules & default response: invalid JSON — ' + e.message);
-    return;
-  }
-  if (rest === null || typeof rest !== 'object' || Array.isArray(rest)) {
-    showSpecError('Rules & default response must be a JSON object.');
-    return;
-  }
-  if (rest.validation !== undefined) {
-    showSpecError('Validation is edited in the form above. Remove "validation" from the rules JSON.');
-    return;
-  }
-
-  // Unknown keys are passed through rather than dropped, so the server rejects
-  // a typo with the same message it always did.
-  const spec = {};
-  if (validation) spec.validation = validation;
-  Object.assign(spec, rest);
 
   try {
     const updated = await api('PUT', `${API}/endpoints/${ep.id}/spec`, JSON.stringify(spec));
@@ -541,6 +676,78 @@ async function saveSpec() {
     // The endpoint keeps serving its previous spec, so nothing is broken.
     showSpecError(e.message + '\n\nThe previous spec is still serving.');
   }
+}
+
+/* ---------- import / export ---------- */
+
+// checkKeys refuses anything the forms cannot represent. Silently dropping an
+// unknown key would lose the user's data on the next save.
+function checkKeys(value, allowed, label) {
+  if (value === undefined) return;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Import: ${label} must be a JSON object.`);
+  }
+  const unknown = Object.keys(value).filter((k) => !allowed.includes(k));
+  if (unknown.length) {
+    throw new Error(`Import: ${label} has unsupported key(s): ${unknown.join(', ')}.`);
+  }
+}
+
+function checkImportedSpec(spec) {
+  checkKeys(spec, SPEC_KEYS, 'the spec');
+  checkKeys(spec.validation, VALIDATION_KEYS, 'validation');
+  if (spec.validation) checkKeys(spec.validation.onFailure, RESPONSE_KEYS, 'validation.onFailure');
+  checkKeys(spec.response, RESPONSE_KEYS, 'response');
+
+  if (spec.rules !== undefined) {
+    if (!Array.isArray(spec.rules)) throw new Error('Import: rules must be an array.');
+    spec.rules.forEach((rule, i) => {
+      checkKeys(rule, RULE_KEYS, `rules[${i}]`);
+      checkKeys(rule.request, REQUEST_KEYS, `rules[${i}].request`);
+      checkKeys(rule.response, RESPONSE_KEYS, `rules[${i}].response`);
+    });
+  }
+}
+
+// exportSpec writes out what the form currently holds, unsaved edits included.
+function exportSpec() {
+  const ep = selectedEndpoint();
+  if (!ep) return;
+  let spec;
+  try {
+    spec = readSpecForm();
+  } catch (e) {
+    showSpecError(e.message);
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([JSON.stringify(spec, null, 2)], { type: 'application/json' }));
+  const a = el('a', { href: url, download: `spec-${ep.id}.json` });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  toast('Spec exported');
+}
+
+// importSpec fills the form but does not save: the user reviews first.
+async function importSpec(file) {
+  let spec;
+  try {
+    spec = JSON.parse(await file.text());
+  } catch (e) {
+    showSpecError('Import: not valid JSON — ' + e.message);
+    return;
+  }
+  try {
+    checkImportedSpec(spec);
+  } catch (e) {
+    showSpecError(e.message);
+    return;
+  }
+  renderSpecForm(spec);
+  setSpecDirty(true);
+  hideSpecError();
+  toast('Imported — review, then save');
 }
 
 /* ---------- wiring ---------- */
@@ -635,29 +842,40 @@ function wire() {
     }
   });
 
-  $('spec-editor').addEventListener('input', () => setSpecDirty(true));
   $('save-spec').addEventListener('click', saveSpec);
   $('reload-spec').addEventListener('click', loadSpecIntoEditor);
   $('example-spec').addEventListener('click', () => {
-    renderValidationForm(EXAMPLE.validation);
-    $('spec-editor').value = rulesJSON(EXAMPLE);
+    renderSpecForm(EXAMPLE);
     setSpecDirty(true);
+  });
+
+  $('add-rule').addEventListener('click', () => {
+    $('rules').appendChild(ruleCard(null));
+    renumberRules();
+    dirty();
+  });
+
+  $('export-spec').addEventListener('click', exportSpec);
+  $('import-spec').addEventListener('click', () => $('import-file').click());
+  $('import-file').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = ''; // allow re-importing the same file
+    if (file) importSpec(file);
   });
 
   $('add-v-header').addEventListener('click', () => { addHeaderRow('', ''); setSpecDirty(true); });
   $('add-v-query').addEventListener('click', () => { addQueryRow(''); setSpecDirty(true); });
   $('add-v-field').addEventListener('click', () => { addFieldRow(''); setSpecDirty(true); });
-  $('add-v-fail-header').addEventListener('click', () => { addFailHeaderRow('', ''); setSpecDirty(true); });
 
-  // Every standalone validation control marks the spec dirty.
-  for (const id of ['v-body-contains', 'v-json-body', 'v-fail-status', 'v-fail-delay', 'v-fail-body']) {
-    $(id).addEventListener('input', () => setSpecDirty(true));
-    $(id).addEventListener('change', () => setSpecDirty(true));
+  // The remaining standalone validation controls mark the spec dirty.
+  for (const id of ['v-body-contains', 'v-json-body']) {
+    $(id).addEventListener('input', dirty);
+    $(id).addEventListener('change', dirty);
   }
 
 
-  // Ctrl/Cmd+S saves the spec when the editor has focus.
-  $('spec-editor').addEventListener('keydown', (e) => {
+  // Ctrl/Cmd+S saves the spec from anywhere in the form.
+  $('tab-spec').addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
       saveSpec();
