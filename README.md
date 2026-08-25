@@ -218,10 +218,10 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 Lint and the test suite run first, so a tag cannot publish a build that does
-not pass CI. Archives are produced for linux (amd64, arm64, arm), macOS (amd64,
-arm64) and Windows (amd64, arm64), each containing the binary, the LICENSE and
-this README, alongside a `SHA256SUMS` file. There is no cgo, so every target is
-a plain cross-compile and the binaries have no runtime dependencies.
+not pass CI. Archives are produced for `linux/amd64`, `linux/arm64` and
+`darwin/arm64`, each containing the binary, the LICENSE and this README,
+alongside a `SHA256SUMS` file. There is no cgo, so every target is a plain
+cross-compile and the binaries have no runtime dependencies.
 
 `mockapi -version` reports the tag it was built from.
 
