@@ -1,9 +1,12 @@
 package endpoint
 
 import (
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/edspc/golang-mock-api-server/internal/mock"
 	"github.com/edspc/golang-mock-api-server/internal/uuid"
@@ -15,26 +18,156 @@ var ErrNotFound = errors.New("endpoint not found")
 // DefaultHistory is how many captured requests an endpoint keeps by default.
 const DefaultHistory = mock.DefaultRecorderCapacity
 
-// Registry holds the live callback endpoints. It is in-memory only: endpoints
-// and their captured traffic do not survive a restart.
-type Registry struct {
-	mu      sync.RWMutex
-	byID    map[uuid.UUID]*Endpoint
-	history int
+// Stored is one persisted endpoint, as the store hands it back.
+type Stored struct {
+	ID        string
+	Name      string
+	CreatedAt time.Time
+	Spec      json.RawMessage
+	Received  int64
 }
 
-// NewRegistry returns an empty Registry whose endpoints keep history requests
-// each.
+// Store persists endpoint settings. It is optional: without one the registry
+// is memory-only and everything disappears with the process.
+type Store interface {
+	Save(Stored) error
+	SetReceived(id string, received int64) error
+	Delete(id string) error
+	List() ([]Stored, error)
+}
+
+// Registry holds the live callback endpoints. Endpoints are always served from
+// memory; a Store, when configured, is written through to and read back at
+// startup.
+type Registry struct {
+	mu   sync.RWMutex
+	byID map[uuid.UUID]*Endpoint
+
+	// historyFor builds the history of a new endpoint, in memory by default.
+	historyFor func(id string) History
+	store      Store
+	log        *slog.Logger
+}
+
+// NewRegistry returns an empty, memory-only Registry whose endpoints keep
+// history requests each.
 func NewRegistry(history int) *Registry {
-	return &Registry{byID: make(map[uuid.UUID]*Endpoint), history: history}
+	return &Registry{
+		byID:       make(map[uuid.UUID]*Endpoint),
+		historyFor: func(string) History { return mock.NewRecorder(history) },
+		log:        slog.New(slog.NewTextHandler(discard{}, nil)),
+	}
+}
+
+type discard struct{}
+
+func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+// Persist makes the registry write endpoint settings through to store, and use
+// historyFor (when non-nil) for captured traffic. Call it before Restore.
+func (r *Registry) Persist(store Store, historyFor func(id string) History, log *slog.Logger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.store = store
+	if historyFor != nil {
+		r.historyFor = historyFor
+	}
+	if log != nil {
+		r.log = log
+	}
+}
+
+// Restore loads previously stored endpoints. A stored spec that no longer
+// validates is reported and skipped rather than failing startup, so one bad
+// row cannot make the service unbootable.
+func (r *Registry) Restore() error {
+	if r.store == nil {
+		return nil
+	}
+	records, err := r.store.List()
+	if err != nil {
+		return err
+	}
+	for _, rec := range records {
+		id, err := uuid.Parse(rec.ID)
+		if err != nil {
+			r.log.Warn("skipping stored endpoint with an unparseable id", "id", rec.ID, "error", err)
+			continue
+		}
+		e := newEndpoint(id, rec.Name, rec.CreatedAt, r.historyFor(rec.ID))
+		var spec Spec
+		if len(rec.Spec) > 0 {
+			if err := json.Unmarshal(rec.Spec, &spec); err != nil {
+				r.log.Warn("skipping stored endpoint with an unreadable spec", "id", rec.ID, "error", err)
+				continue
+			}
+		}
+		if err := e.SetSpec(spec); err != nil {
+			r.log.Warn("skipping stored endpoint whose spec no longer validates", "id", rec.ID, "error", err)
+			continue
+		}
+		e.received.Store(rec.Received)
+		r.attach(e)
+
+		r.mu.Lock()
+		r.byID[id] = e
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+// attach wires an endpoint's persistence hooks. Failures are logged rather
+// than returned: a callback still has to be answered.
+func (r *Registry) attach(e *Endpoint) {
+	if r.store == nil {
+		return
+	}
+	e.onSpec = func(ep *Endpoint) {
+		if err := r.store.Save(r.record(ep)); err != nil {
+			r.log.Error("persist endpoint spec", "id", ep.ID.String(), "error", err)
+		}
+	}
+	e.onRecv = func(ep *Endpoint) {
+		if err := r.store.SetReceived(ep.ID.String(), ep.Received()); err != nil {
+			r.log.Error("persist received counter", "id", ep.ID.String(), "error", err)
+		}
+	}
+}
+
+func (r *Registry) record(e *Endpoint) Stored {
+	spec, err := json.Marshal(e.Spec())
+	if err != nil {
+		r.log.Error("encode endpoint spec", "id", e.ID.String(), "error", err)
+		spec = json.RawMessage("{}")
+	}
+	return Stored{
+		ID:        e.ID.String(),
+		Name:      e.Name,
+		CreatedAt: e.CreatedAt,
+		Spec:      spec,
+		Received:  e.Received(),
+	}
 }
 
 // Create registers a new endpoint with a fresh UUIDv8.
 func (r *Registry) Create(name string) (*Endpoint, error) {
-	e, err := New(name, r.history)
+	id, err := uuid.NewV8()
 	if err != nil {
 		return nil, err
 	}
+	r.mu.RLock()
+	historyFor := r.historyFor
+	r.mu.RUnlock()
+
+	e := newEndpoint(id, name, id.Time(), historyFor(id.String()))
+	r.attach(e)
+
+	if r.store != nil {
+		if err := r.store.Save(r.record(e)); err != nil {
+			return nil, err
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.byID[e.ID] = e
@@ -63,11 +196,23 @@ func (r *Registry) Delete(id string) error {
 		return ErrNotFound
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.byID[u]; !ok {
+	e, ok := r.byID[u]
+	if !ok {
+		r.mu.Unlock()
 		return ErrNotFound
 	}
 	delete(r.byID, u)
+	r.mu.Unlock()
+
+	// Drop the captured traffic too, so a stored request log does not outlive
+	// the endpoint it belongs to.
+	e.history.Reset()
+
+	if r.store != nil {
+		if err := r.store.Delete(id); err != nil {
+			r.log.Error("delete stored endpoint", "id", id, "error", err)
+		}
+	}
 	return nil
 }
 

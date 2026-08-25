@@ -54,6 +54,25 @@ From then on: a callback missing `X-Signature` gets 400 with the reason, a
 | `-history` | `200` | captured requests kept per endpoint |
 | `-quiet` | `false` | log warnings and errors only |
 
+### Storage
+
+By default everything is in memory and disappears with the process. Point the
+environment at SQLite files to keep it:
+
+| Variable | Holds |
+| --- | --- |
+| `MOCKAPI_ENDPOINTS_DB` | endpoints and the spec each one serves |
+| `MOCKAPI_REQUESTS_DB` | the captured requests |
+
+```sh
+MOCKAPI_ENDPOINTS_DB=./endpoints.db MOCKAPI_REQUESTS_DB=./requests.db ./bin/mockapi
+```
+
+They are separate databases on purpose: endpoint settings are small and worth
+backing up, captured traffic is bulky and disposable. Each is independent —
+set one, the other, both or neither. Deleting an endpoint also drops its
+captured requests. Files are created on first use.
+
 ## The console
 
 At `/`: create endpoints, watch requests arrive live, inspect each one's

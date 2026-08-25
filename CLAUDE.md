@@ -18,8 +18,13 @@ go test ./internal/server -run 'TestUpdateSpec/valid'             # a single sub
 ```
 
 `make lint` fails on unformatted files rather than fixing them; run `make fmt`
-first. Go 1.24, stdlib only — there are no third-party dependencies, and adding
-one is a deliberate decision rather than a default.
+first.
+
+The one third-party dependency is `modernc.org/sqlite` (pure Go, no cgo), added
+because the standard library has no SQLite and persistence was asked for. It
+drags in nine indirect modules and raised the go directive to 1.25. Everything
+else is stdlib, and adding a second dependency is a deliberate decision rather
+than a default.
 
 ## Dispatch
 
@@ -48,14 +53,26 @@ so moving it stays a one-line change; keep it that way.
 
 ## Architecture
 
-`cmd/mockapi` (flags, signals) → `internal/server` (HTTP) →
+`cmd/mockapi` (flags, signals, storage wiring) → `internal/server` (HTTP) →
 `internal/endpoint` (the registry and the decision logic) →
 `internal/mock` (matching, recording, templating).
 
+`internal/store` (SQLite) and `internal/persist` (adapters) sit beside that.
+
 **`internal/endpoint`** is the feature the service exists for.
 
-- `Registry` maps `uuid.UUID` → `*Endpoint`, in memory only. If persistence is
-  ever wanted, this is the single seam to change.
+- `Registry` maps `uuid.UUID` → `*Endpoint`. Endpoints are always **served**
+  from memory; `Persist` adds write-through to a `Store` and `Restore` reads
+  them back at startup. Without one the registry is memory-only, which is the
+  default.
+- Persistence is wired through interfaces `endpoint` declares itself (`Store`,
+  `History`) so it never imports `store`; `internal/persist` holds the adapters
+  that join the two. Keep that direction — the reverse creates an import cycle.
+- `History` has no error returns because a callback must be answered whatever
+  the database does. `persist.History` logs failures instead: a dropped write
+  loses one recorded request, never a callback.
+- `onSpec`/`onRecv` are separate hooks so a callback updates only the received
+  counter rather than rewriting the spec on every request.
 - `SetSpec` validates and compiles the whole spec *before* taking the lock, so
   a rejected edit cannot leave an endpoint half-updated.
 - `Endpoint.Handle` decides (validate → match rules → default response) and
@@ -84,6 +101,14 @@ server reads (`TestSpecCannotReadServerFiles`).
 - `Recorder` is a bounded ring; each endpoint owns one, so no endpoint's
   traffic can appear under another (`TestEachEndpointHasItsOwnHistory`).
 - `Render` expands response-body templates.
+
+### `internal/store`
+
+Two SQLite databases, never one: endpoint settings and captured traffic have
+different lifetimes and sizes, and either can be left unconfigured. Both open
+with WAL and a busy timeout so a callback waits rather than failing. `Restore`
+skips a stored row it cannot read or validate, with a warning, so one bad row
+cannot make the service unbootable.
 
 ### `internal/uuid`
 
