@@ -53,6 +53,7 @@ From then on: a callback missing `X-Signature` gets 400 with the reason, a
 | `-addr` | `:8080` | listen address |
 | `-history` | `200` | captured requests kept per endpoint |
 | `-quiet` | `false` | log warnings and errors only |
+| `-version` | | print the version and exit |
 
 ### Storage
 
@@ -207,6 +208,22 @@ make test          # go test ./...
 make lint          # go vet + gofmt check
 make cover         # coverage summary
 ```
+
+## Releases
+
+Pushing a `v*` tag builds the binaries and publishes a GitHub release:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Lint and the test suite run first, so a tag cannot publish a build that does
+not pass CI. Archives are produced for linux (amd64, arm64, arm), macOS (amd64,
+arm64) and Windows (amd64, arm64), each containing the binary, the LICENSE and
+this README, alongside a `SHA256SUMS` file. There is no cgo, so every target is
+a plain cross-compile and the binaries have no runtime dependencies.
+
+`mockapi -version` reports the tag it was built from.
 
 ## License
 

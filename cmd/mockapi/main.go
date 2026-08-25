@@ -59,6 +59,11 @@ func authConfig(addr string) auth.Config {
 	return cfg
 }
 
+// version is stamped at build time with -ldflags "-X main.version=…". It stays
+// "dev" for a plain `go build`, so an unstamped binary never claims to be a
+// release.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "mockapi:", err)
@@ -131,8 +136,14 @@ func run() error {
 		addr        = flag.String("addr", ":8080", "address to listen on")
 		historySize = flag.Int("history", endpoint.DefaultHistory, "how many captured requests to keep per endpoint")
 		quiet       = flag.Bool("quiet", false, "log warnings and errors only")
+		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("mockapi", version)
+		return nil
+	}
 
 	level := slog.LevelInfo
 	if *quiet {
@@ -178,7 +189,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("listening", "addr", *addr, "ui", "http://localhost"+port(*addr)+server.UIPath)
+		log.Info("listening", "version", version, "addr", *addr, "ui", "http://localhost"+port(*addr)+server.UIPath)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

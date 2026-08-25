@@ -26,6 +26,18 @@ drags in nine indirect modules and raised the go directive to 1.25. Everything
 else is stdlib, and adding a second dependency is a deliberate decision rather
 than a default.
 
+## Releases
+
+`.github/workflows/release.yml` fires on a `v*` tag. It runs lint and tests
+before building, so a tag cannot publish something CI would have rejected, and
+cross-compiles every target from one runner with `CGO_ENABLED=0` — possible
+only because the SQLite driver is pure Go. Keep it that way: a cgo dependency
+would turn this into a matrix of per-OS runners.
+
+The version is stamped with `-X main.version`, and `main.version` defaults to
+`"dev"` so an unstamped binary never claims to be a release. Publishing uses
+the `gh` CLI already on the runner rather than a third-party action.
+
 ## Dispatch
 
 Three path spaces, resolved in `Server.ServeHTTP` in this order:
