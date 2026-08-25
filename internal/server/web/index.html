@@ -75,6 +75,9 @@
             <button id="reload-spec" class="ghost">Discard changes</button>
             <button id="example-spec" class="ghost">Insert example</button>
             <span class="spacer"></span>
+            <button id="import-spec" class="ghost">Import</button>
+            <button id="export-spec" class="ghost">Export</button>
+            <input id="import-file" type="file" accept="application/json,.json" hidden>
             <span id="spec-status" class="status"></span>
           </div>
           <div id="spec-error" class="error" hidden></div>
@@ -114,46 +117,33 @@
 
             <details id="v-onfailure" class="sub">
               <summary>Failure response <span class="hint">— default is 400 listing every reason</span></summary>
-              <div class="sub-body">
-                <div class="field inline">
-                  <label for="v-fail-status">Status</label>
-                  <input id="v-fail-status" type="number" min="100" max="599" placeholder="400" autocomplete="off">
-                  <label for="v-fail-delay">Delay</label>
-                  <input id="v-fail-delay" type="text" placeholder="e.g. 250ms" autocomplete="off">
-                </div>
-                <div class="field">
-                  <label>Headers</label>
-                  <div id="v-fail-headers" class="rows"></div>
-                  <button type="button" class="ghost add" id="add-v-fail-header">+ header</button>
-                </div>
-                <div class="field">
-                  <label for="v-fail-body">Body (JSON)</label>
-                  <textarea id="v-fail-body" class="small" spellcheck="false" autocomplete="off"
-                            placeholder='{"error": "bad payload"}'></textarea>
-                </div>
-              </div>
+              <div class="sub-body" id="v-fail-block"></div>
             </details>
           </section>
 
           <section class="form-section">
-            <h3>Rules &amp; default response</h3>
-            <p class="hint">Everything except validation, as JSON.</p>
-            <textarea id="spec-editor" spellcheck="false" autocomplete="off"></textarea>
+            <h3>Rules</h3>
+            <p class="hint">Tried in order, first match wins — put specific rules
+              above catch-alls. Every field left empty is simply not constrained.</p>
+            <div id="rules"></div>
+            <button type="button" class="ghost add" id="add-rule">+ rule</button>
             <details class="help">
-              <summary>What goes in here</summary>
+              <summary>Response body templates</summary>
               <ul>
-                <li><code>rules</code> are tried in order, first match wins. A rule
-                  with no <code>path</code> matches any sub-path below the endpoint URL.</li>
-                <li><code>response</code> answers requests that validated but matched
-                  no rule.</li>
-                <li>Response bodies are templates:
-                  <code>{{.Body.event}}</code>, <code>{{.Body.data.id}}</code>,
-                  <code>{{.Path.id}}</code>, <code>{{.Query.source}}</code>,
-                  <code>{{.Header.XApiKey}}</code>, <code>{{now}}</code>.</li>
-                <li>Saving replaces the spec wholesale. If it is rejected, the
-                  previous spec keeps serving.</li>
+                <li><code>{{.Body.event}}</code> — a field of the JSON request body
+                  (<code>{{.Body.data.id}}</code> nests).</li>
+                <li><code>{{.Path.id}}</code> — an <code>{id}</code> capture from the rule's path;
+                  <code>{{.Path.rest}}</code> — the trailing <code>*</code>.</li>
+                <li><code>{{.Query.source}}</code>, <code>{{.Header.XApiKey}}</code>, <code>{{now}}</code>.</li>
               </ul>
             </details>
+          </section>
+
+          <section class="form-section">
+            <h3>Default response</h3>
+            <p class="hint">Answers callbacks that validated but matched no rule.
+              Leave it empty for <code>200 {"received":true}</code>.</p>
+            <div id="default-response" class="sub-body"></div>
           </section>
         </div>
       </div>
