@@ -51,6 +51,30 @@ Every control route is built by concatenating `AdminPrefix`, never by spelling
 the prefix out, and the console is told the prefix by the server (see below),
 so moving it stays a one-line change; keep it that way.
 
+## Sign-in
+
+`internal/auth` guards **only** the control API. Callback traffic is dispatched
+in `ServeHTTP` before the guard and never passes through it: a third party
+posting to `/cb/{id}` cannot sign in, and requiring it would defeat the
+service. `TestCallbacksStayOpenWhenSignInIsRequired` pins that.
+
+- A nil `*Auth` is a valid, disabled guard, so the no-credentials default needs
+  no branching at the call sites.
+- `New` refuses to enable sign-in without an allowed email list or domain.
+  Google sign-in with no allowlist authenticates everyone on earth, which is
+  not authentication; failing to start is the safe answer.
+- `/api/auth/*` is the only control path Guard lets through unauthenticated —
+  the console has to be able to ask whether sign-in is needed and to start it.
+- The OAuth `state` is signed into a short-lived cookie and compared on the way
+  back, so a forged callback cannot mint a session
+  (`TestCallbackRejectsForgedState`).
+- The session key is per-process, so sessions end with the process even when
+  endpoints outlive it in SQLite. A signing key on disk is a liability that
+  buys only staying signed in across a restart.
+- The email comes from Google's userinfo endpoint rather than by parsing the
+  id_token: it arrives straight from Google over TLS, so there is no JWT
+  signature to verify and no key set to fetch.
+
 ## Architecture
 
 `cmd/mockapi` (flags, signals, storage wiring) → `internal/server` (HTTP) →
@@ -144,6 +168,11 @@ any working directory. No build step, no framework, no npm.
   same contract from the other side: it rejects any key the forms cannot
   render rather than losing it. Read paths emit keys in the Go field order so
   an exported file is byte-identical to what the API returns.
+- Everything the console toggles uses the `hidden` attribute, and a global
+  `[hidden] { display: none !important }` makes it stick — component rules like
+  `.signin { display: flex }` otherwise outrank the browser default and paint
+  the element anyway. The sign-in overlay also hides `<main>` rather than just
+  covering it, so the console behind it leaves the tab order.
 - **Captured request data is attacker-controlled** (anyone who can reach a
   callback URL writes it). Everything rendered from the API goes into the DOM
   via `textContent`/`el()`, never `innerHTML`. A browser test asserts that a

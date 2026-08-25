@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/edspc/golang-mock-api-server/internal/auth"
 	"github.com/edspc/golang-mock-api-server/internal/endpoint"
 	"github.com/edspc/golang-mock-api-server/internal/persist"
 	"github.com/edspc/golang-mock-api-server/internal/server"
@@ -27,6 +28,36 @@ const (
 	envEndpointsDB = "MOCKAPI_ENDPOINTS_DB"
 	envRequestsDB  = "MOCKAPI_REQUESTS_DB"
 )
+
+// Google sign-in is configured the same way: no keys, no authentication.
+const (
+	envClientID      = "GOOGLE_CLIENT_ID"
+	envClientSecret  = "GOOGLE_CLIENT_SECRET"
+	envBaseURL       = "MOCKAPI_BASE_URL"
+	envAllowedEmails = "MOCKAPI_ALLOWED_EMAILS"
+	envAllowedDomain = "MOCKAPI_ALLOWED_DOMAIN"
+)
+
+// authConfig reads the sign-in configuration. The base URL falls back to the
+// listen address so a local trial needs one less variable; anything reachable
+// from outside must set it, because Google matches the redirect URI exactly.
+func authConfig(addr string) auth.Config {
+	cfg := auth.Config{
+		ClientID:      os.Getenv(envClientID),
+		ClientSecret:  os.Getenv(envClientSecret),
+		BaseURL:       os.Getenv(envBaseURL),
+		AllowedDomain: os.Getenv(envAllowedDomain),
+	}
+	for _, email := range strings.Split(os.Getenv(envAllowedEmails), ",") {
+		if email = strings.TrimSpace(email); email != "" {
+			cfg.AllowedEmails = append(cfg.AllowedEmails, email)
+		}
+	}
+	if cfg.BaseURL == "" && cfg.Configured() {
+		cfg.BaseURL = "http://localhost" + port(addr)
+	}
+	return cfg
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -116,9 +147,21 @@ func run() error {
 	}
 	defer closeStores()
 
+	guard, err := auth.New(authConfig(*addr), log)
+	if err != nil {
+		return err
+	}
+	if guard.Enabled() {
+		log.Info("sign-in: google oauth required for the control API",
+			"redirect", strings.TrimSuffix(authConfig(*addr).BaseURL, "/")+server.AdminPrefix+"auth/callback")
+	} else {
+		log.Info("sign-in: disabled", "reason", envClientID+" and "+envClientSecret+" are unset")
+	}
+
 	srv, err := server.New(server.Options{
 		Endpoints: registry,
 		Logger:    log,
+		Auth:      guard,
 	})
 	if err != nil {
 		return err

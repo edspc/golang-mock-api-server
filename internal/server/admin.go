@@ -18,12 +18,14 @@ func (s *Server) adminMux() *http.ServeMux {
 	})
 
 	s.registerEndpointAdmin(mux)
+	s.auth.Routes(mux, AdminPrefix)
 
 	mux.HandleFunc(AdminPrefix, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"error": "unknown control endpoint",
 			"endpoints": []string{
 				"GET " + AdminPrefix + "health",
+				"GET " + AdminPrefix + "auth/status",
 				"POST " + AdminPrefix + "endpoints", "GET " + AdminPrefix + "endpoints",
 				"GET " + AdminPrefix + "endpoints/{id}", "DELETE " + AdminPrefix + "endpoints/{id}",
 				"PUT " + AdminPrefix + "endpoints/{id}/spec",
