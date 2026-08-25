@@ -56,6 +56,15 @@ type Validation struct {
 	OnFailure *config.Response `json:"onFailure,omitempty"`
 }
 
+// History records and returns the traffic captured on one endpoint. The
+// in-memory ring and the SQLite-backed log both satisfy it, so Endpoint never
+// learns which one it has.
+type History interface {
+	Record(mock.Entry)
+	Entries() []mock.Entry
+	Reset()
+}
+
 // Endpoint is one callback URL and everything captured on it.
 type Endpoint struct {
 	ID        uuid.UUID `json:"-"`
@@ -67,22 +76,27 @@ type Endpoint struct {
 	spec  Spec
 	rules []*mock.Rule
 
-	recorder *mock.Recorder
+	history  History
 	received atomic.Int64
+
+	// onSpec and onRecv let the Registry persist changes. They are separate
+	// because a callback must not rewrite the spec on every request.
+	onSpec func(*Endpoint)
+	onRecv func(*Endpoint)
 }
 
-// New creates an endpoint with a fresh UUIDv8 and an empty spec.
+// New creates an endpoint with a fresh UUIDv8, an empty spec and an in-memory
+// history of the given size.
 func New(name string, history int) (*Endpoint, error) {
 	id, err := uuid.NewV8()
 	if err != nil {
 		return nil, err
 	}
-	return &Endpoint{
-		ID:        id,
-		Name:      name,
-		CreatedAt: id.Time(),
-		recorder:  mock.NewRecorder(history),
-	}, nil
+	return newEndpoint(id, name, id.Time(), mock.NewRecorder(history)), nil
+}
+
+func newEndpoint(id uuid.UUID, name string, created time.Time, h History) *Endpoint {
+	return &Endpoint{ID: id, Name: name, CreatedAt: created, history: h}
 }
 
 // Spec returns the endpoint's current behaviour.
@@ -118,9 +132,13 @@ func (e *Endpoint) SetSpec(spec Spec) error {
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.spec = spec
 	e.rules = rules
+	e.mu.Unlock()
+
+	if e.onSpec != nil {
+		e.onSpec(e)
+	}
 	return nil
 }
 
@@ -148,11 +166,11 @@ func (v *Validation) normalize() error {
 func (e *Endpoint) Received() int64 { return e.received.Load() }
 
 // Requests returns the captured request history, oldest first.
-func (e *Endpoint) Requests() []mock.Entry { return e.recorder.Entries() }
+func (e *Endpoint) Requests() []mock.Entry { return e.history.Entries() }
 
 // ResetRequests clears the captured history. The received counter is left
 // alone: it reports lifetime traffic, not history size.
-func (e *Endpoint) ResetRequests() { e.recorder.Reset() }
+func (e *Endpoint) ResetRequests() { e.history.Reset() }
 
 // Outcome is what an endpoint decided to do with one callback.
 type Outcome struct {
@@ -226,7 +244,7 @@ func validationFailureResponse(v *Validation, errs []string) config.Response {
 }
 
 func (e *Endpoint) record(r *http.Request, body []byte, out Outcome) {
-	e.recorder.Record(mock.Entry{
+	e.history.Record(mock.Entry{
 		Time:             time.Now().UTC(),
 		Method:           r.Method,
 		Path:             r.URL.Path,
@@ -237,6 +255,9 @@ func (e *Endpoint) record(r *http.Request, body []byte, out Outcome) {
 		Status:           out.Response.Status,
 		ValidationErrors: out.ValidationErrors,
 	})
+	if e.onRecv != nil {
+		e.onRecv(e)
+	}
 }
 
 // check returns every reason the request is invalid, so the user fixing their

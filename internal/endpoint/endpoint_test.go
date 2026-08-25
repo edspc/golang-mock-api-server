@@ -19,7 +19,7 @@ func mustSpec(t *testing.T, raw string) Spec {
 	return spec
 }
 
-func newEndpoint(t *testing.T, rawSpec string) *Endpoint {
+func testEndpoint(t *testing.T, rawSpec string) *Endpoint {
 	t.Helper()
 	e, err := New("test", 10)
 	if err != nil {
@@ -40,7 +40,7 @@ func post(path, body string) *http.Request {
 }
 
 func TestNewEndpointHasV8ID(t *testing.T) {
-	e := newEndpoint(t, "")
+	e := testEndpoint(t, "")
 	if !e.ID.IsV8() {
 		t.Errorf("ID %s is not a v8 UUID", e.ID)
 	}
@@ -50,7 +50,7 @@ func TestNewEndpointHasV8ID(t *testing.T) {
 }
 
 func TestDefaultResponseAcknowledges(t *testing.T) {
-	e := newEndpoint(t, "")
+	e := testEndpoint(t, "")
 
 	out := e.Handle(post("/cb/x", `{"a":1}`), "/", []byte(`{"a":1}`))
 
@@ -72,7 +72,7 @@ func TestDefaultResponseAcknowledges(t *testing.T) {
 }
 
 func TestRulesMatchInOrder(t *testing.T) {
-	e := newEndpoint(t, `{
+	e := testEndpoint(t, `{
 	  "rules": [
 	    {"name":"paid","request":{"method":"POST","bodyContains":"\"type\":\"paid\""},
 	     "response":{"status":202,"body":{"handled":"paid"}}},
@@ -92,7 +92,7 @@ func TestRulesMatchInOrder(t *testing.T) {
 }
 
 func TestRulePathMatchesSubPath(t *testing.T) {
-	e := newEndpoint(t, `{
+	e := testEndpoint(t, `{
 	  "rules": [
 	    {"name":"success","request":{"path":"/success"},"response":{"status":200}},
 	    {"name":"failure","request":{"path":"/failure"},"response":{"status":500}}
@@ -112,7 +112,7 @@ func TestRulePathMatchesSubPath(t *testing.T) {
 }
 
 func TestRuleWithoutPathMatchesAnySubPath(t *testing.T) {
-	e := newEndpoint(t, `{"rules":[{"name":"any","response":{"status":204}}]}`)
+	e := testEndpoint(t, `{"rules":[{"name":"any","response":{"status":204}}]}`)
 
 	for _, sub := range []string{"/", "/a", "/a/b/c"} {
 		out := e.Handle(post("/cb/x"+sub, ""), sub, nil)
@@ -123,7 +123,7 @@ func TestRuleWithoutPathMatchesAnySubPath(t *testing.T) {
 }
 
 func TestValidationCollectsAllErrors(t *testing.T) {
-	e := newEndpoint(t, `{
+	e := testEndpoint(t, `{
 	  "validation": {
 	    "requireHeaders": ["X-Signature", "X-Env: prod"],
 	    "requireQuery": ["source"],
@@ -159,7 +159,7 @@ func TestValidationCollectsAllErrors(t *testing.T) {
 }
 
 func TestValidationPasses(t *testing.T) {
-	e := newEndpoint(t, `{
+	e := testEndpoint(t, `{
 	  "validation": {"requireHeaders":["X-Signature"],"requireFields":["event"]},
 	  "rules": [{"name":"ok","response":{"status":200}}]
 	}`)
@@ -177,7 +177,7 @@ func TestValidationPasses(t *testing.T) {
 }
 
 func TestValidationOnFailureResponse(t *testing.T) {
-	e := newEndpoint(t, `{
+	e := testEndpoint(t, `{
 	  "validation": {
 	    "jsonBody": true,
 	    "onFailure": {"status": 422, "body": {"error":"bad payload"}}
@@ -198,7 +198,7 @@ func TestValidationOnFailureResponse(t *testing.T) {
 }
 
 func TestValidationSkipsRules(t *testing.T) {
-	e := newEndpoint(t, `{
+	e := testEndpoint(t, `{
 	  "validation": {"requireHeaders":["X-Signature"]},
 	  "rules": [{"name":"never","response":{"status":200}}]
 	}`)
@@ -210,7 +210,7 @@ func TestValidationSkipsRules(t *testing.T) {
 }
 
 func TestSetSpecRejectsInvalidAndKeepsPrevious(t *testing.T) {
-	e := newEndpoint(t, `{"rules":[{"name":"v1","response":{"status":201}}]}`)
+	e := testEndpoint(t, `{"rules":[{"name":"v1","response":{"status":201}}]}`)
 
 	err := e.SetSpec(mustSpec(t, `{"rules":[{"name":"bad","request":{"path":"/a/*/b"}}]}`))
 	if err == nil {
@@ -233,7 +233,7 @@ func TestSpecCannotReadServerFiles(t *testing.T) {
 }
 
 func TestSetSpecReplacesWholesale(t *testing.T) {
-	e := newEndpoint(t, `{"rules":[{"name":"old","response":{"status":201}}]}`)
+	e := testEndpoint(t, `{"rules":[{"name":"old","response":{"status":201}}]}`)
 	if err := e.SetSpec(Spec{}); err != nil {
 		t.Fatalf("SetSpec() error = %v", err)
 	}
@@ -243,7 +243,7 @@ func TestSetSpecReplacesWholesale(t *testing.T) {
 }
 
 func TestResetRequestsKeepsCounter(t *testing.T) {
-	e := newEndpoint(t, "")
+	e := testEndpoint(t, "")
 	e.Handle(post("/cb/x", ""), "/", nil)
 	e.Handle(post("/cb/x", ""), "/", nil)
 	e.ResetRequests()
@@ -281,7 +281,7 @@ func TestLookupField(t *testing.T) {
 }
 
 func TestResponseNormalizationAppliesToRules(t *testing.T) {
-	e := newEndpoint(t, `{"rules":[{"name":"defaulted","response":{"body":{"ok":true}}}]}`)
+	e := testEndpoint(t, `{"rules":[{"name":"defaulted","response":{"body":{"ok":true}}}]}`)
 	out := e.Handle(post("/cb/x", ""), "/", nil)
 	if out.Response.Status != http.StatusOK {
 		t.Errorf("status = %d, want the 200 default applied to rule responses", out.Response.Status)
