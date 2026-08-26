@@ -224,16 +224,17 @@ func (r *Registry) GetFor(caller, id string) (*Endpoint, error) {
 	return e, nil
 }
 
-// Delete removes an endpoint and everything it captured. It is scoped like
-// GetFor: everyone the endpoint reaches has the same access to it.
-func (r *Registry) Delete(caller, id string) error {
+// Delete removes an endpoint and everything it captured. Unlike the rest of
+// the control surface it is the owner's alone: sharing hands over the traffic
+// and the spec, not the right to destroy them.
+func (r *Registry) Delete(owner, id string) error {
 	u, err := uuid.Parse(id)
 	if err != nil {
 		return ErrNotFound
 	}
 	r.mu.Lock()
 	e, ok := r.byID[u]
-	if !ok || !e.AccessibleBy(caller) {
+	if !ok || e.Owner != owner {
 		r.mu.Unlock()
 		return ErrNotFound
 	}

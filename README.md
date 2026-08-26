@@ -110,11 +110,12 @@ The owner can share it from the console's **Share** button, or over the API:
 curl -X PUT localhost:8080/api/endpoints/$ID/share -d '{"shared":["colleague@example.com"]}'
 ```
 
-There is exactly one level of access. Everyone the endpoint is shared with can
-do what the owner can — read the captured traffic, edit the spec, rename it,
-delete it — with a single exception: **only the owner can change the share
-list**, so access cannot be passed on. Sharing with a shorter list revokes;
-`{"shared":[]}` revokes everyone.
+There is exactly one level of access: everyone the endpoint is shared with can
+read the captured traffic, edit the spec, rename it and clear its history,
+exactly as the owner can. Two things stay with the owner — **sharing**, so
+access cannot be passed on, and **deleting**, so nobody else can take the
+endpoint away from everyone. Both answer 403 to anyone else. Sharing with a
+shorter list revokes; `{"shared":[]}` revokes everyone.
 
 Two things ownership never touches:
 
@@ -178,7 +179,7 @@ Endpoints live in memory unless a database is configured (see
 | `POST /api/endpoints` | create one; optional `{"name":…, "spec":…}` |
 | `GET /api/endpoints` | list, newest first |
 | `GET /api/endpoints/{id}` | current spec and lifetime request count |
-| `DELETE /api/endpoints/{id}` | drop it and everything it captured |
+| `DELETE /api/endpoints/{id}` | drop it and everything it captured (owner only) |
 | `PUT /api/endpoints/{id}/name` | relabel it: `{"name":"stripe"}`; the URL never changes |
 | `PUT /api/endpoints/{id}/share` | give other accounts access: `{"shared":["a@b.com"]}` (owner only) |
 | `PUT /api/endpoints/{id}/spec` | replace the response and validation logic |

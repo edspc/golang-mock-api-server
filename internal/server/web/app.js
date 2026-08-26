@@ -282,12 +282,14 @@ function renderEndpointHead() {
   if (!ep) return;
   $('ep-name').textContent = ep.name || 'untitled endpoint';
 
-  // Only the owner can hand out access. Someone the endpoint was shared with
-  // sees whose it is instead, so an endpoint they did not create is never a
-  // mystery.
-  const mine = state.authEnabled && ep.owner && ep.owner === state.email;
-  $('share-endpoint').hidden = !mine;
-  const sharedWithMe = ep.owner && ep.owner !== state.email;
+  // Sharing and deleting are the owner's alone, so an account the endpoint was
+  // shared with is offered neither — it sees whose endpoint it is instead, and
+  // an endpoint it did not create is never a mystery. With sign-in off there
+  // are no owners and everything is offered, as it always was.
+  const sharedWithMe = !!ep.owner && ep.owner !== state.email;
+  const mine = !sharedWithMe;
+  $('share-endpoint').hidden = !(mine && state.authEnabled && ep.owner);
+  $('delete-endpoint').hidden = !mine;
   $('ep-shared-by').hidden = !sharedWithMe;
   $('ep-shared-by').textContent = sharedWithMe ? 'shared by ' + ep.owner : '';
   if (state.sharing && !mine) stopShare();

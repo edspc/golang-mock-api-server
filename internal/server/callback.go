@@ -177,11 +177,30 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, viewOf(ep))
 	})
 
+	// Deleting is the owner's alone. Sharing passes on the traffic and the
+	// spec; it does not pass on the right to take them away from everyone,
+	// the owner included.
 	mux.HandleFunc("DELETE "+AdminPrefix+"endpoints/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.endpoints.Delete(s.auth.Caller(r), r.PathValue("id")); err != nil {
-			writeNotFound(w, r.PathValue("id"))
+		ep, ok := s.lookup(w, r)
+		if !ok {
 			return
 		}
+		caller := s.auth.Caller(r)
+		if ep.Owner != caller {
+			// 403 rather than the 404 an unreachable endpoint gets: this one
+			// is in their listing, so pretending it is not there would only
+			// confuse.
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "only the owner can delete this endpoint",
+				"owner": ep.Owner,
+			})
+			return
+		}
+		if err := s.endpoints.Delete(caller, ep.ID.String()); err != nil {
+			writeNotFound(w, ep.ID.String())
+			return
+		}
+		s.log.Info("endpoint deleted", "id", ep.ID.String(), "owner", ep.Owner)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	})
 
@@ -210,10 +229,9 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, viewOf(ep))
 	})
 
-	// Sharing gives another account the same access the owner has — reading
-	// the traffic, editing the spec, deleting it. The one thing it does not
-	// pass on is this route: only the owner decides who else is on the list,
-	// so a shared account cannot widen its own reach.
+	// Sharing gives another account the same access the owner has over the
+	// endpoint's traffic and spec. Two things stay with the owner: this route,
+	// so a shared account cannot widen its own reach, and deletion.
 	mux.HandleFunc("PUT "+AdminPrefix+"endpoints/{id}/share", func(w http.ResponseWriter, r *http.Request) {
 		ep, ok := s.lookup(w, r)
 		if !ok {
