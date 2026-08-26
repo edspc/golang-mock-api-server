@@ -62,6 +62,35 @@ func TestConsoleLearnsApiBaseFromServer(t *testing.T) {
 	}
 }
 
+// The whole app can be mounted under a sub-path — an nginx `location /mockapi/`
+// proxying to this server's root — and the server never learns it was. That
+// works only as long as the page asks for everything relative to itself: one
+// absolute "/app.js" or a URL built from location.origin would escape the
+// mount and 404.
+func TestConsoleAssetsAreRelative(t *testing.T) {
+	srv := newTestServer(t)
+	index := do(t, srv, http.MethodGet, "/", "").Body.String()
+
+	for _, absolute := range []string{`src="/`, `href="/`, `action="/`} {
+		if strings.Contains(index, absolute) {
+			t.Errorf("index.html contains %s; asset references must be relative to the page", absolute)
+		}
+	}
+
+	js := do(t, srv, http.MethodGet, "/app.js", "").Body.String()
+	if strings.Contains(js, "location.origin") {
+		t.Error("app.js builds a URL from location.origin; resolve against the page base instead")
+	}
+	if !strings.Contains(js, "document.baseURI") {
+		t.Error("app.js does not resolve server paths against the page base")
+	}
+	// Every request has to go through the rebasing helper, so the count of
+	// fetch calls and of href() rebases must not drift apart.
+	if got := strings.Count(js, "fetch(href("); got != strings.Count(js, "fetch(") {
+		t.Errorf("%d of %d fetch calls rebase their path", got, strings.Count(js, "fetch("))
+	}
+}
+
 func TestUnknownAssetIs404(t *testing.T) {
 	srv := newTestServer(t)
 

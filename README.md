@@ -84,7 +84,7 @@ either way**, since a third party posting to `/cb/{id}` has no way to sign in.
 | --- | --- |
 | `GOOGLE_CLIENT_ID` | OAuth client id; sign-in is off unless set |
 | `GOOGLE_CLIENT_SECRET` | OAuth client secret |
-| `MOCKAPI_BASE_URL` | externally visible origin, e.g. `https://mock.example.com` (defaults to the listen address) |
+| `MOCKAPI_BASE_URL` | externally visible origin, e.g. `https://mock.example.com` — include the path prefix if the app is mounted under one (defaults to the listen address) |
 | `MOCKAPI_ALLOWED_EMAILS` | comma-separated addresses that may manage endpoints |
 | `MOCKAPI_ALLOWED_DOMAIN` | a whole domain that may, e.g. `example.com` |
 
@@ -100,13 +100,42 @@ process.
 
 ## The console
 
-At `/`: create endpoints, watch requests arrive live, inspect each one's
-headers, query and body, and build the validation, rules and responses through
-forms — no JSON typing, with import and export for moving a spec between
-endpoints.
+At `/`: create endpoints, rename them, watch requests arrive, inspect each
+one's headers, query and body, and build the validation, rules and responses
+through forms — no JSON typing, with import and export for moving a spec
+between endpoints.
 It is compiled into the binary — no build step, no npm, nothing to serve
 separately — and is a pure client of the API below, so anything it does you can
 also do with curl.
+
+Requests appear as they arrive: the console subscribes to the event stream and
+shows a **live** badge while it is connected. If the stream cannot be held open
+it falls back to polling on its own, and nothing else changes.
+
+### Behind a path prefix
+
+The console asks for everything relative to the page it was served from, so
+the whole app can be mounted under a sub-path with no configuration on this
+side — there is no base-path flag to set:
+
+```nginx
+location /mockapi/ {
+    proxy_pass http://127.0.0.1:8080/;   # the trailing slash strips the prefix
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+}
+location = /mockapi { return 301 /mockapi/; }
+```
+
+The trailing slash on `proxy_pass` is what matters: the server always serves
+itself from `/`, and never has to be told where it was mounted. Callback URLs
+the console shows include the prefix, since that is the URL a third party has
+to call. The event stream sets `X-Accel-Buffering: no`, so nginx streams it
+through rather than buffering it forever.
+
+With sign-in on, `MOCKAPI_BASE_URL` carries the prefix too
+(`https://example.com/mockapi`) — Google needs an absolute redirect URI, the
+only URL here that cannot be relative.
 
 ## Endpoints
 
@@ -123,10 +152,40 @@ Endpoints live in memory unless a database is configured (see
 | `GET /api/endpoints` | list, newest first |
 | `GET /api/endpoints/{id}` | current spec and lifetime request count |
 | `DELETE /api/endpoints/{id}` | drop it and everything it captured |
+| `PUT /api/endpoints/{id}/name` | relabel it: `{"name":"stripe"}`; the URL never changes |
 | `PUT /api/endpoints/{id}/spec` | replace the response and validation logic |
 | `GET /api/endpoints/{id}/requests` | captured requests (`?invalid=true` for failures only) |
 | `POST /api/endpoints/{id}/reset` | clear the captured history |
+| `GET /api/events` | server-sent events: every change, as it happens |
 | `GET /api/health` | liveness plus the endpoint count |
+
+A name is a label for your own use — renaming touches nothing a caller can
+see, so an endpoint someone else is already posting to can be relabelled at
+any time.
+
+### Live events
+
+`GET /api/events` is a [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+stream. It is how the console learns about a callback the moment it lands
+instead of on a timer, and it works just as well from a script:
+
+```sh
+curl -N localhost:8080/api/events
+#=> data: {"type":"request","endpoint":"01a0333e-…","received":7}
+```
+
+| `type` | Meaning |
+| --- | --- |
+| `request` | a callback arrived |
+| `created` / `deleted` | an endpoint appeared or went away |
+| `updated` | renamed, or its spec replaced |
+| `reset` | its captured history was cleared |
+
+Events say *what* changed, not what it changed to: read the endpoint back for
+the detail. Delivery is best-effort — a client that stops reading loses events
+rather than slowing down the callbacks that produce them — so treat the stream
+as a signal to re-read, not as a log. An idle stream sends a comment line every
+25 seconds to keep proxies from closing it.
 
 `/api/` is reserved for the control API and `/cb/` for endpoint traffic; both
 are matched before the console, so neither can be shadowed by it. Any other
@@ -218,10 +277,14 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 Lint and the test suite run first, so a tag cannot publish a build that does
-not pass CI. Archives are produced for `linux/amd64`, `linux/arm64` and
-`darwin/arm64`, each containing the binary, the LICENSE and this README,
-alongside a `SHA256SUMS` file. There is no cgo, so every target is a plain
-cross-compile and the binaries have no runtime dependencies.
+not pass CI. Binaries are published for `linux/amd64`, `linux/arm64` and
+`darwin/arm64`, with a `SHA256SUMS` file. There is no cgo, so every target is a
+plain cross-compile and the binaries have no runtime dependencies:
+
+```sh
+curl -fsSLO https://github.com/edspc/golang-mock-api-server/releases/latest/download/mockapi_v0.1.0_linux_amd64
+chmod +x mockapi_v0.1.0_linux_amd64
+```
 
 `mockapi -version` reports the tag it was built from.
 

@@ -182,7 +182,14 @@ func run() error {
 		Addr:              *addr,
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Deliberately no WriteTimeout: /api/events is a stream that stays
+		// open for as long as a console is watching, and a write deadline
+		// would cut it off on a schedule.
 	}
+	// Which also means shutdown has to end those streams itself, or it would
+	// wait out its timeout on a connection that is behaving exactly as
+	// intended.
+	httpSrv.RegisterOnShutdown(srv.CloseStreams)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

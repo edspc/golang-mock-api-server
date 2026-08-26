@@ -44,7 +44,7 @@ Three path spaces, resolved in `Server.ServeHTTP` in this order:
 
 | Prefix | Handler |
 | --- | --- |
-| `/api/` | `admin.go`, `callback.go` |
+| `/api/` | `admin.go`, `callback.go`, `events.go` |
 | `/cb/{uuid}` | `serveCallback` (`callback.go`) |
 | everything else | `serveUI` (`ui.go`) — the embedded console |
 
@@ -107,10 +107,20 @@ service. `TestCallbacksStayOpenWhenSignInIsRequired` pins that.
 - `History` has no error returns because a callback must be answered whatever
   the database does. `persist.History` logs failures instead: a dropped write
   loses one recorded request, never a callback.
-- `onSpec`/`onRecv` are separate hooks so a callback updates only the received
-  counter rather than rewriting the spec on every request.
+- `onSave`/`onRecv` are separate hooks so a callback updates only the received
+  counter rather than rewriting the settings on every request. `onEvent` is a
+  third, wired by `attach` whether or not anything is persisted.
 - `SetSpec` validates and compiles the whole spec *before* taking the lock, so
   a rejected edit cannot leave an endpoint half-updated.
+- The `name` is behind the same lock as the spec rather than an exported field,
+  because `SetName` makes it mutable while every listing reads it. Renaming
+  changes the label only — the URL is the endpoint's identity, so it cannot
+  break a third party already calling it.
+- `events.go` is the notification broker: one `Registry`-wide fan-out feeding
+  the SSE handler. Two rules make it safe on the callback path — publishing
+  never blocks (a subscriber that stops draining loses events), and an `Event`
+  says only *what* changed, so a dropped one costs latency and nothing else.
+  Do not grow it into a second copy of the endpoint API; subscribers re-read.
 - `Endpoint.Handle` decides (validate → match rules → default response) and
   records, but **writes nothing**. All HTTP writing lives in
   `server/callback.go`. Keep that split: it is what makes the decision logic
@@ -194,6 +204,22 @@ any working directory. No build step, no framework, no npm.
   console reads the spec back into its editor after each save; without it the
   user's document accumulates `"delay":"0s"`-style noise they never wrote
   (`TestSpecRoundTripsWithoutZeroValueNoise`).
+- **Every URL is resolved against the page, never against the origin.** The app
+  can be mounted under a sub-path (`location /mockapi/` proxying to the
+  server's root) and the server has no way to learn that it was: it always
+  serves itself from `/`. So the paths it hands out — the api-base meta tag, an
+  endpoint's `url`, the `login` path in a 401 — are rebased by `href()` in the
+  JS, asset references in `index.html` stay relative, and the one Go-side
+  redirect (after sign-in) sends a *relative* `Location`, written by hand
+  because `http.Redirect` would resolve it back to an absolute `/`.
+  `TestConsoleAssetsAreRelative` and `TestSignInRedirectIsRelativeToTheCallback`
+  guard both halves. Deliberately no base-path flag: there is nothing to
+  misconfigure.
+- Updates are pushed over `/api/events`, not polled for. The stream is only a
+  signal — every event triggers a re-read through the normal API, coalesced so
+  a burst of callbacks cannot outrun the rendering. Polling survives as a slow
+  safety net (every 5th tick while the stream is up) because it is also what
+  notices an expired session: EventSource cannot report a 401, it just retries.
 - Polling is 3s, skipped when the tab is hidden, never overwrites the spec
   editor while it holds unsaved changes, and re-checks the selection after every
   await so a slow response cannot paint one endpoint's traffic under another's

@@ -109,7 +109,23 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	expires := time.Now().Add(sessionTTL)
 	a.setCookie(w, sessionCookie, a.sign(email+"|"+strconv.FormatInt(expires.Unix(), 10)), sessionTTL)
 	a.log.Info("signed in", "email", email)
-	http.Redirect(w, r, "/", http.StatusFound)
+	// Written by hand rather than with http.Redirect, which resolves a relative
+	// target against the request path and would hand the browser an absolute
+	// "/" again — see consolePath.
+	w.Header().Set("Location", a.consolePath())
+	w.WriteHeader(http.StatusFound)
+}
+
+// consolePath is where to send the browser once it is signed in: the console,
+// expressed *relative* to the callback route. A literal "/" is wrong whenever
+// the app is mounted under a sub-path — the browser is then at
+// /mockapi/api/auth/callback while the server only ever sees
+// /api/auth/callback, and has no way to learn the difference. The browser
+// resolves the relative form against the URL it actually asked for, so it
+// lands on the console either way.
+func (a *Auth) consolePath() string {
+	up := strings.Count(strings.Trim(a.callbackPath, "/"), "/")
+	return strings.Repeat("../", up)
 }
 
 // exchange trades the authorization code for the signed-in address.

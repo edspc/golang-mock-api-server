@@ -63,8 +63,11 @@ func TestControlAPIRequiresSignIn(t *testing.T) {
 		{http.MethodGet, "/api/endpoints/" + view.ID},
 		{http.MethodGet, "/api/endpoints/" + view.ID + "/requests"},
 		{http.MethodPut, "/api/endpoints/" + view.ID + "/spec"},
+		{http.MethodPut, "/api/endpoints/" + view.ID + "/name"},
 		{http.MethodDelete, "/api/endpoints/" + view.ID},
 		{http.MethodGet, "/api/health"},
+		// The stream carries captured traffic like any other control route.
+		{http.MethodGet, "/api/events"},
 	} {
 		w := do(t, srv, tc.method, tc.path, "")
 		if w.Code != http.StatusUnauthorized {

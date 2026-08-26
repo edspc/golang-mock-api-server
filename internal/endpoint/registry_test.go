@@ -19,8 +19,8 @@ func TestRegistryCreateAndGet(t *testing.T) {
 	if got != e {
 		t.Error("Get() returned a different endpoint than Create()")
 	}
-	if got.Name != "webhooks" {
-		t.Errorf("Name = %q, want webhooks", got.Name)
+	if got.Name() != "webhooks" {
+		t.Errorf("Name() = %q, want webhooks", got.Name())
 	}
 }
 
