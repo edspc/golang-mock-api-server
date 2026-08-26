@@ -215,6 +215,14 @@ any working directory. No build step, no framework, no npm.
   `TestConsoleAssetsAreRelative` and `TestSignInRedirectIsRelativeToTheCallback`
   guard both halves. Deliberately no base-path flag: there is nothing to
   misconfigure.
+- Filtering the request list is the server's job (`filter.go`), not the
+  console's: the console builds the same query string a curl user would, so the
+  two can never disagree about what "4xx" means. An unknown query key is a 400
+  — a mistyped filter that silently returns everything is the same trap as a
+  mistyped spec key that never matches.
+- There is no manual refresh control and no live-updates toggle. The stream
+  plus the safety poll make both redundant, and a stale list with a Refresh
+  button next to it is a worse answer than a list that is simply current.
 - Updates are pushed over `/api/events`, not polled for. The stream is only a
   signal — every event triggers a re-read through the normal API, coalesced so
   a burst of callbacks cannot outrun the rendering. Polling survives as a slow
