@@ -28,8 +28,9 @@ function href(serverPath) {
 const state = {
   endpoints: [],
   selectedId: null,
+  filterMethod: '',
+  filterStatus: '',
   filterInvalid: false,
-  auto: true,
   stream: null,
   live: false,
   auth: true,
@@ -295,12 +296,22 @@ async function saveName() {
 
 /* ---------- requests ---------- */
 
+// filterQuery is the current filter as the listing's query string. The server
+// does the filtering, so the console can never disagree with what curl shows.
+function filterQuery() {
+  const q = new URLSearchParams();
+  if (state.filterMethod) q.set('method', state.filterMethod);
+  if (state.filterStatus) q.set('status', state.filterStatus);
+  if (state.filterInvalid) q.set('invalid', 'true');
+  const s = q.toString();
+  return s ? '?' + s : '';
+}
+
 async function loadRequests() {
   const ep = selectedEndpoint();
   if (!ep) return;
   const id = ep.id;
-  const filtered = state.filterInvalid;
-  const query = filtered ? '?invalid=true' : '';
+  const query = filterQuery();
   let entries;
   try {
     entries = await api('GET', `${API}/endpoints/${id}/requests${query}`) || [];
@@ -310,8 +321,8 @@ async function loadRequests() {
 
   // The selection (or filter) can change while the request is in flight;
   // rendering a stale response would show one endpoint's traffic under
-  // another's header until the next poll.
-  if (state.selectedId !== id || state.filterInvalid !== filtered) return;
+  // another's header, or under filters that no longer apply.
+  if (state.selectedId !== id || filterQuery() !== query) return;
 
   const json = JSON.stringify(entries);
   if (json === state.lastRequestsJSON) return; // avoid re-rendering on every poll
@@ -319,8 +330,16 @@ async function loadRequests() {
 
   renderRequests($('requests'), entries, {
     showValidation: true,
-    emptyText: filtered ? 'No failed requests captured.' : 'Nothing captured yet.',
+    emptyText: query ? 'No captured request matches these filters.' : 'Nothing captured yet.',
   });
+}
+
+// applyFilter re-reads the listing under the new filter. The cached copy is
+// dropped first: the same entries under a different filter are a different
+// answer.
+function applyFilter() {
+  state.lastRequestsJSON = '';
+  loadRequests().catch((e) => { if (!e.unauthorized) toast(e.message); });
 }
 
 // renderRequests draws newest first. Every field here is third-party input.
@@ -929,21 +948,19 @@ function wire() {
     }
   });
 
+  for (const [id, key] of [['filter-method', 'filterMethod'], ['filter-status', 'filterStatus']]) {
+    $(id).addEventListener('change', (e) => {
+      state[key] = e.target.value;
+      // Mark the control while it is hiding requests: an empty list under an
+      // unremarkable-looking select reads as lost traffic.
+      e.target.classList.toggle('is-set', e.target.value !== '');
+      applyFilter();
+    });
+  }
+
   $('filter-invalid').addEventListener('change', (e) => {
     state.filterInvalid = e.target.checked;
-    state.lastRequestsJSON = '';
-    loadRequests();
-  });
-
-  $('auto-refresh').addEventListener('change', (e) => { state.auto = e.target.checked; });
-
-  // Refresh the received counts too, not just the request list: they come
-  // from the endpoint listing and would otherwise stay stale until the poll.
-  $('refresh-requests').addEventListener('click', async () => {
-    state.lastRequestsJSON = '';
-    await loadEndpoints();
-    renderEndpointHead();
-    await loadRequests();
+    applyFilter();
   });
 
   $('reset-requests').addEventListener('click', async () => {
@@ -1058,7 +1075,7 @@ function setLive(live) {
 // onServerEvent decides how much to re-read. A deleted or created endpoint
 // changes the listing; a request changes the selected endpoint's history.
 function onServerEvent(ev) {
-  if (!state.auto || !state.auth) return;
+  if (!state.auth) return;
   scheduleRefresh(ev && ev.endpoint === state.selectedId &&
     (ev.type === 'request' || ev.type === 'reset'));
 }
@@ -1094,7 +1111,7 @@ async function refresh(withRequests) {
 }
 
 async function poll() {
-  if (!state.auto || document.hidden || !state.auth) return;
+  if (document.hidden || !state.auth) return;
   await refresh(true);
 }
 

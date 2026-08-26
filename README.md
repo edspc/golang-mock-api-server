@@ -100,10 +100,10 @@ process.
 
 ## The console
 
-At `/`: create endpoints, rename them, watch requests arrive, inspect each
-one's headers, query and body, and build the validation, rules and responses
-through forms — no JSON typing, with import and export for moving a spec
-between endpoints.
+At `/`: create endpoints, rename them, watch requests arrive, filter them by
+method, status or validation failure, inspect each one's headers, query and
+body, and build the validation, rules and responses through forms — no JSON
+typing, with import and export for moving a spec between endpoints.
 It is compiled into the binary — no build step, no npm, nothing to serve
 separately — and is a pure client of the API below, so anything it does you can
 also do with curl.
@@ -154,7 +154,7 @@ Endpoints live in memory unless a database is configured (see
 | `DELETE /api/endpoints/{id}` | drop it and everything it captured |
 | `PUT /api/endpoints/{id}/name` | relabel it: `{"name":"stripe"}`; the URL never changes |
 | `PUT /api/endpoints/{id}/spec` | replace the response and validation logic |
-| `GET /api/endpoints/{id}/requests` | captured requests (`?invalid=true` for failures only) |
+| `GET /api/endpoints/{id}/requests` | captured requests, filtered by `method`, `status` and `invalid` |
 | `POST /api/endpoints/{id}/reset` | clear the captured history |
 | `GET /api/events` | server-sent events: every change, as it happens |
 | `GET /api/health` | liveness plus the endpoint count |
@@ -162,6 +162,23 @@ Endpoints live in memory unless a database is configured (see
 A name is a label for your own use — renaming touches nothing a caller can
 see, so an endpoint someone else is already posting to can be relabelled at
 any time.
+
+### Filtering captured requests
+
+| Parameter | Matches |
+| --- | --- |
+| `method=post` | that method, any case |
+| `status=404` | that exact status |
+| `status=4xx` | that whole class (`1xx` … `5xx`) |
+| `invalid=true` | only requests that failed validation |
+
+```sh
+curl "localhost:8080/api/endpoints/$ID/requests?method=POST&status=4xx"
+```
+
+They combine, and the console's filters are these same parameters — it has no
+filtering of its own to disagree with. An unknown parameter is a 400 rather
+than a silently unfiltered listing, so a typo cannot look like "no traffic".
 
 ### Live events
 

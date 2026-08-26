@@ -203,17 +203,12 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 		if !ok {
 			return
 		}
-		entries := ep.Requests()
-		if only := r.URL.Query().Get("invalid"); only == "true" {
-			filtered := make([]mock.Entry, 0, len(entries))
-			for _, e := range entries {
-				if len(e.ValidationErrors) > 0 {
-					filtered = append(filtered, e)
-				}
-			}
-			entries = filtered
+		filter, err := parseRequestFilter(r.URL.Query())
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
 		}
-		writeJSON(w, http.StatusOK, entries)
+		writeJSON(w, http.StatusOK, filter.apply(ep.Requests()))
 	})
 
 	mux.HandleFunc("POST "+AdminPrefix+"endpoints/{id}/reset", func(w http.ResponseWriter, r *http.Request) {

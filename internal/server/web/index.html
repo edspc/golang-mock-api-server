@@ -84,10 +84,25 @@
 
         <div id="tab-requests" class="tabpanel is-active">
           <div class="toolbar">
+            <select id="filter-method" class="filter" aria-label="Filter by method">
+              <option value="">Any method</option>
+              <option>GET</option>
+              <option>POST</option>
+              <option>PUT</option>
+              <option>PATCH</option>
+              <option>DELETE</option>
+              <option>HEAD</option>
+              <option>OPTIONS</option>
+            </select>
+            <select id="filter-status" class="filter" aria-label="Filter by status">
+              <option value="">Any status</option>
+              <option value="2xx">2xx</option>
+              <option value="3xx">3xx</option>
+              <option value="4xx">4xx</option>
+              <option value="5xx">5xx</option>
+            </select>
             <label class="check"><input type="checkbox" id="filter-invalid"> Failed validation only</label>
-            <label class="check"><input type="checkbox" id="auto-refresh" checked> Live updates</label>
             <span class="spacer"></span>
-            <button id="refresh-requests" class="ghost">Refresh</button>
             <button id="reset-requests" class="ghost">Clear history</button>
           </div>
           <div id="requests" class="requests"></div>
