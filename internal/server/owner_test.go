@@ -299,7 +299,28 @@ func TestSharedAccountsGetTheSameAccess(t *testing.T) {
 		})
 	}
 
-	// But they cannot widen their own reach.
+	// The owner can still delete it themselves, once the rest is checked.
+	t.Cleanup(func() {
+		if w := mine.do(t, http.MethodDelete, "/api/endpoints/"+view.ID, ""); w.Code != http.StatusOK {
+			t.Errorf("the owner deleting their own endpoint = %d, want 200", w.Code)
+		}
+	})
+
+	// But deleting stays with the owner.
+	t.Run("cannot delete", func(t *testing.T) {
+		w := theirs.do(t, http.MethodDelete, "/api/endpoints/"+view.ID, "")
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, body = %s, want 403", w.Code, w.Body)
+		}
+		if !strings.Contains(w.Body.String(), "only the owner") {
+			t.Errorf("body = %s, want it to name the rule", w.Body)
+		}
+		if got := mine.list(t); len(got) != 1 {
+			t.Errorf("the owner has %d endpoints, want theirs still there", len(got))
+		}
+	})
+
+	// And they cannot widen their own reach.
 	t.Run("cannot re-share", func(t *testing.T) {
 		w := theirs.share(t, view.ID, `{"shared":["colleague@edspc.dev","stranger@else.com"]}`)
 		if w.Code != http.StatusForbidden {

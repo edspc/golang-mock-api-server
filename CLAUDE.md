@@ -127,14 +127,17 @@ service. `TestCallbacksStayOpenWhenSignInIsRequired` pins that.
   (`AccessibleBy`), so endpoints made with sign-in off belong to the anonymous
   owner and become invisible to everyone the moment sign-in goes on — the safe
   direction, and the reason there is no "adopt these" path.
-- `List`, `Count`, `GetFor` and `Delete` are all caller-scoped; `Get` is not,
-  because it is the callback path and a third party has no identity to scope
-  by. An unreachable endpoint is `ErrNotFound`, never a forbidden — its URL is
-  public, so distinguishing the two only confirms ids.
-- Sharing grants exactly one level of access: everyone on the list can do what
-  the owner can. The single exception is the share list itself, and that rule
-  lives in the HTTP layer (`endpoints/{id}/share`), because only it knows who
-  is asking. Keep it there — `SetShared` deliberately does not take a caller.
+- `List`, `Count` and `GetFor` are caller-scoped (owner or shared), `Delete` is
+  owner-only, and `Get` is neither — it is the callback path, where a third
+  party has no identity to scope by. An unreachable endpoint is `ErrNotFound`,
+  never a forbidden: its URL is public, so distinguishing the two only confirms
+  ids. An endpoint the caller *can* see but may not delete is the opposite case
+  and answers 403, because it is sitting in their listing.
+- Sharing grants exactly one level of access: everyone on the list can read the
+  traffic and edit the spec. Two things stay with the owner — the share list
+  and deletion — and both rules live in the HTTP layer, because only it knows
+  who is asking. Keep them there: `SetShared` deliberately takes no caller, and
+  `Registry.Delete` only re-checks the owner as a backstop.
 - `events.go` is the notification broker: one `Registry`-wide fan-out feeding
   the SSE handler. Two rules make it safe on the callback path — publishing
   never blocks (a subscriber that stops draining loses events), and an `Event`
