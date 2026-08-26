@@ -220,6 +220,10 @@ func (e *Endpoint) ResetRequests() {
 // Outcome is what an endpoint decided to do with one callback.
 type Outcome struct {
 	Response config.Response
+	// RequestID identifies the captured request. The HTTP layer returns it in
+	// the X-Mock-API-RequestID header, so the caller can name the exact
+	// request it made when asking what happened to it.
+	RequestID string
 	// Rule is the name of the rule that matched, empty when none did.
 	Rule string
 	// ValidationErrors is non-empty when the request failed validation, in
@@ -238,7 +242,7 @@ func (e *Endpoint) Handle(r *http.Request, subPath string, body []byte) Outcome 
 	e.mu.RUnlock()
 
 	e.received.Add(1)
-	out := Outcome{}
+	out := Outcome{RequestID: newRequestID()}
 
 	if spec.Validation != nil {
 		if errs := spec.Validation.check(r, body); len(errs) > 0 {
@@ -288,8 +292,21 @@ func validationFailureResponse(v *Validation, errs []string) config.Response {
 	return config.Response{Status: http.StatusBadRequest, Body: body}
 }
 
+// newRequestID mints the id of one captured request. UUIDv8 again, so request
+// ids sort by arrival like endpoint ids do. An exhausted entropy source is not
+// a reason to fail a callback: the request is still captured and answered,
+// only without an id to quote back.
+func newRequestID() string {
+	id, err := uuid.NewV8()
+	if err != nil {
+		return ""
+	}
+	return id.String()
+}
+
 func (e *Endpoint) record(r *http.Request, body []byte, out Outcome) {
 	e.history.Record(mock.Entry{
+		ID:               out.RequestID,
 		Time:             time.Now().UTC(),
 		Method:           r.Method,
 		Path:             r.URL.Path,

@@ -100,10 +100,11 @@ process.
 
 ## The console
 
-At `/`: create endpoints, rename them, watch requests arrive, filter them by
-method, status or validation failure, inspect each one's headers, query and
-body, and build the validation, rules and responses through forms — no JSON
-typing, with import and export for moving a spec between endpoints.
+At `/`: create endpoints, rename them, watch requests arrive, find one by its
+request id or filter by method, status or validation failure, inspect each
+one's headers, query and body, and build the validation, rules and responses
+through forms — no JSON typing, with import and export for moving a spec
+between endpoints.
 It is compiled into the binary — no build step, no npm, nothing to serve
 separately — and is a pure client of the API below, so anything it does you can
 also do with curl.
@@ -163,10 +164,33 @@ A name is a label for your own use — renaming touches nothing a caller can
 see, so an endpoint someone else is already posting to can be relabelled at
 any time.
 
+### Request IDs
+
+Every answer an endpoint gives carries the id of the request it captured:
+
+```
+X-Mock-API-RequestID: 01a03d46-abfe-8000-af95-c3dae662ffa9
+```
+
+So when a third party logs "the webhook returned 400", that id is in their log
+line, and it names one exact row here — no guessing from timestamps. It comes
+back on every answer, the failures included: a validation rejection and a
+broken response template are the ones worth looking up. Paste it into the
+console's search box, or ask for it directly:
+
+```sh
+curl "localhost:8080/api/endpoints/$ID/requests?requestId=01a03d46-abfe-…"
+```
+
+A rule that sets `X-Mock-API-RequestID` itself replaces the header rather than
+adding a second one; the request is still recorded under the id the server
+minted.
+
 ### Filtering captured requests
 
 | Parameter | Matches |
 | --- | --- |
+| `requestId=01a0…` | the one request answered with that id |
 | `method=post` | that method, any case |
 | `status=404` | that exact status |
 | `status=4xx` | that whole class (`1xx` … `5xx`) |
@@ -175,6 +199,9 @@ any time.
 ```sh
 curl "localhost:8080/api/endpoints/$ID/requests?method=POST&status=4xx"
 ```
+
+An id that matches nothing is an empty listing, not an error — history is
+bounded by `-history`, so a real id can age out of it.
 
 They combine, and the console's filters are these same parameters — it has no
 filtering of its own to disagree with. An unknown parameter is a 400 rather

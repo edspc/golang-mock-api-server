@@ -84,6 +84,10 @@
 
         <div id="tab-requests" class="tabpanel is-active">
           <div class="toolbar">
+            <input id="filter-id" class="filter filter-id" type="search" placeholder="Request ID"
+                   aria-label="Find a request by its X-Mock-API-RequestID"
+                   title="Paste the X-Mock-API-RequestID a callback was answered with"
+                   autocomplete="off" spellcheck="false">
             <select id="filter-method" class="filter" aria-label="Filter by method">
               <option value="">Any method</option>
               <option>GET</option>

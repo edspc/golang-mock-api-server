@@ -14,16 +14,17 @@ import (
 // and the zero value matches everything, so an unfiltered listing costs
 // nothing.
 type requestFilter struct {
-	invalid bool
-	method  string // uppercased; empty means any
-	status  int    // an exact code; 0 means any
-	class   int    // a status class from "4xx"; 0 means any
+	invalid   bool
+	method    string // uppercased; empty means any
+	status    int    // an exact code; 0 means any
+	class     int    // a status class from "4xx"; 0 means any
+	requestID string // one captured request, by the id it was answered with
 }
 
 // filterParams are the query keys the listing understands. Anything else is
 // rejected rather than ignored: a mistyped filter that silently returns
 // everything is the same trap as a mistyped spec key that never matches.
-var filterParams = map[string]bool{"invalid": true, "method": true, "status": true}
+var filterParams = map[string]bool{"invalid": true, "method": true, "status": true, "requestId": true}
 
 func parseRequestFilter(q url.Values) (requestFilter, error) {
 	var f requestFilter
@@ -36,7 +37,7 @@ func parseRequestFilter(q url.Values) (requestFilter, error) {
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return f, fmt.Errorf("unknown filter %s; supported: invalid, method, status",
+		return f, fmt.Errorf("unknown filter %s; supported: invalid, method, requestId, status",
 			strings.Join(unknown, ", "))
 	}
 
@@ -51,6 +52,12 @@ func parseRequestFilter(q url.Values) (requestFilter, error) {
 	// Methods are compared against what was captured, which config already
 	// uppercases everywhere else.
 	f.method = strings.ToUpper(strings.TrimSpace(q.Get("method")))
+
+	// An id is quoted back from a response header or a log line, so it is
+	// matched whole and without caring about case. An id that matches nothing
+	// is an empty listing, not an error: it may simply have aged out of the
+	// endpoint's bounded history.
+	f.requestID = strings.TrimSpace(q.Get("requestId"))
 
 	raw := strings.TrimSpace(q.Get("status"))
 	switch lower := strings.ToLower(raw); {
@@ -70,7 +77,7 @@ func parseRequestFilter(q url.Values) (requestFilter, error) {
 
 // any reports whether the filter constrains anything.
 func (f requestFilter) any() bool {
-	return f.invalid || f.method != "" || f.status != 0 || f.class != 0
+	return f.invalid || f.method != "" || f.status != 0 || f.class != 0 || f.requestID != ""
 }
 
 func (f requestFilter) match(e mock.Entry) bool {
@@ -82,6 +89,8 @@ func (f requestFilter) match(e mock.Entry) bool {
 	case f.status != 0 && e.Status != f.status:
 		return false
 	case f.class != 0 && e.Status/100 != f.class:
+		return false
+	case f.requestID != "" && !strings.EqualFold(e.ID, f.requestID):
 		return false
 	}
 	return true

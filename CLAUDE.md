@@ -127,6 +127,10 @@ service. `TestCallbacksStayOpenWhenSignInIsRequired` pins that.
   testable without an HTTP round trip.
 - `ResetRequests` clears history but deliberately leaves `Received()` alone —
   it reports lifetime traffic, not history size.
+- Every captured request gets a UUIDv8 of its own, minted in `Handle` and
+  carried on the `Outcome` so the HTTP layer can return it as
+  `X-Mock-API-RequestID`. If the generator ever fails the id is empty and the
+  header is omitted — a callback is still answered.
 
 **`internal/config`** owns the shapes a spec is written in (`Rule`, `Request`,
 `Response`, `Duration`) plus their validation and normalization — uppercased
@@ -155,6 +159,12 @@ different lifetimes and sizes, and either can be left unconfigured. Both open
 with WAL and a busy timeout so a callback waits rather than failing. `Restore`
 skips a stored row it cannot read or validate, with a warning, so one bad row
 cannot make the service unbootable.
+
+Schema changes go through `addColumn`, which is a no-op when the column is
+already there: SQLite has no `ADD COLUMN IF NOT EXISTS`, and a database written
+by an older build must keep opening rather than fail at startup. Rows written
+before a column existed simply have its zero value — `request_id` is the first
+of these.
 
 ### `internal/uuid`
 
@@ -215,6 +225,11 @@ any working directory. No build step, no framework, no npm.
   `TestConsoleAssetsAreRelative` and `TestSignInRedirectIsRelativeToTheCallback`
   guard both halves. Deliberately no base-path flag: there is nothing to
   misconfigure.
+- The request-id header is written straight into the header map rather than
+  through `Header.Set`, which would canonicalise it to `X-Mock-Api-Requestid`.
+  The name is documented and pasted around by its exact spelling, so it goes
+  out as written; a spec header of the same name replaces it instead of
+  joining it as a second value under a different map key.
 - Filtering the request list is the server's job (`filter.go`), not the
   console's: the console builds the same query string a curl user would, so the
   two can never disagree about what "4xx" means. An unknown query key is a 400

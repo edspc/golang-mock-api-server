@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/textproto"
 	"strings"
 
 	"github.com/edspc/golang-mock-api-server/internal/endpoint"
@@ -14,6 +15,23 @@ import (
 // CallbackPrefix is where dynamically created callback endpoints are served:
 // /cb/{uuid} plus any sub-path.
 const CallbackPrefix = "/cb/"
+
+// RequestIDHeader carries the id of the captured request back to whoever sent
+// it, on every answer an endpoint gives.
+const RequestIDHeader = "X-Mock-API-RequestID"
+
+// canonicalRequestIDHeader is what Go's Header.Set would store it under.
+var canonicalRequestIDHeader = textproto.CanonicalMIMEHeaderKey(RequestIDHeader)
+
+// setRequestID writes the header with its documented spelling. Header.Set
+// would canonicalise it to X-Mock-Api-Requestid; the name is documented,
+// searched for and pasted into the console, so it goes out as written.
+func setRequestID(w http.ResponseWriter, id string) {
+	if id == "" {
+		return
+	}
+	w.Header()[RequestIDHeader] = []string{id}
+}
 
 // serveCallback dispatches traffic aimed at a callback endpoint. Everything
 // below /cb/{id} belongs to that endpoint, and the remainder of the path is
@@ -39,6 +57,10 @@ func (s *Server) serveCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := ep.Handle(r, subPath, body)
+	// Before anything that can return: a validation failure and a broken
+	// response template are answers too, and are exactly the ones worth
+	// looking up afterwards.
+	setRequestID(w, out.RequestID)
 
 	if d := out.Response.Delay.Duration(); d > 0 && !sleep(r, d) {
 		return
@@ -56,6 +78,12 @@ func (s *Server) serveCallback(w http.ResponseWriter, r *http.Request) {
 
 	header := w.Header()
 	for k, v := range out.Response.Headers {
+		// A spec that sets the request-id header itself wins, and replaces
+		// ours rather than joining it: Header.Set stores the canonical
+		// spelling, which is a different map key from the one above.
+		if textproto.CanonicalMIMEHeaderKey(k) == canonicalRequestIDHeader {
+			delete(header, RequestIDHeader)
+		}
 		header.Set(k, v)
 	}
 	if len(rendered) > 0 && header.Get("Content-Type") == "" {

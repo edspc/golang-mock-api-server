@@ -11,6 +11,10 @@ const DefaultRecorderCapacity = 200
 // Entry is one recorded request/response pair, served at /api/requests so tests
 // can assert on what their subject actually sent.
 type Entry struct {
+	// ID identifies this one captured request. It is also sent back to the
+	// caller in the X-Mock-API-RequestID response header, so a third party's
+	// log line and a row here can be matched up.
+	ID      string              `json:"id,omitempty"`
 	Time    time.Time           `json:"time"`
 	Method  string              `json:"method"`
 	Path    string              `json:"path"`
