@@ -7,7 +7,7 @@ import (
 
 func TestRegistryCreateAndGet(t *testing.T) {
 	reg := NewRegistry(10)
-	e, err := reg.Create("webhooks")
+	e, err := reg.Create("", "webhooks")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -35,17 +35,17 @@ func TestRegistryGetUnknown(t *testing.T) {
 
 func TestRegistryDelete(t *testing.T) {
 	reg := NewRegistry(10)
-	e, err := reg.Create("")
+	e, err := reg.Create("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.Delete(e.ID.String()); err != nil {
+	if err := reg.Delete("", e.ID.String()); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 	if _, err := reg.Get(e.ID.String()); err != ErrNotFound {
 		t.Errorf("Get() after Delete() error = %v, want ErrNotFound", err)
 	}
-	if err := reg.Delete(e.ID.String()); err != ErrNotFound {
+	if err := reg.Delete("", e.ID.String()); err != ErrNotFound {
 		t.Errorf("second Delete() error = %v, want ErrNotFound", err)
 	}
 }
@@ -54,14 +54,14 @@ func TestRegistryListIsNewestFirst(t *testing.T) {
 	reg := NewRegistry(10)
 	var ids []string
 	for i := 0; i < 5; i++ {
-		e, err := reg.Create("")
+		e, err := reg.Create("", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, e.ID.String())
 	}
 
-	list := reg.List()
+	list := reg.List("")
 	if len(list) != 5 {
 		t.Fatalf("len(List()) = %d, want 5", len(list))
 	}
@@ -80,7 +80,7 @@ func TestRegistryConcurrentCreate(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := reg.Create(""); err != nil {
+			if _, err := reg.Create("", ""); err != nil {
 				t.Errorf("Create() error = %v", err)
 			}
 		}()
@@ -88,5 +88,62 @@ func TestRegistryConcurrentCreate(t *testing.T) {
 	wg.Wait()
 	if got := reg.Len(); got != 50 {
 		t.Errorf("Len() = %d, want 50 distinct endpoints", got)
+	}
+}
+
+// An endpoint is listed only to the identity that created it, and the
+// anonymous owner ("") is an identity like any other.
+func TestRegistryScopesByOwner(t *testing.T) {
+	reg := NewRegistry(10)
+
+	mine, err := reg.Create("me@edspc.dev", "mine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := reg.Create("someone@else.com", "theirs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anon, err := reg.Create("", "anonymous")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		owner string
+		want  *Endpoint
+	}{
+		{"me@edspc.dev", mine},
+		{"someone@else.com", theirs},
+		{"", anon},
+	} {
+		t.Run(tc.owner, func(t *testing.T) {
+			list := reg.List(tc.owner)
+			if len(list) != 1 || list[0] != tc.want {
+				t.Fatalf("List(%q) returned %d endpoints, want only their own", tc.owner, len(list))
+			}
+			if got := reg.Count(tc.owner); got != 1 {
+				t.Errorf("Count(%q) = %d, want 1", tc.owner, got)
+			}
+			if _, err := reg.GetFor(tc.owner, tc.want.ID.String()); err != nil {
+				t.Errorf("GetFor(%q, own endpoint) = %v, want it found", tc.owner, err)
+			}
+		})
+	}
+
+	// Everything else is not found, and cannot be deleted.
+	if _, err := reg.GetFor("me@edspc.dev", theirs.ID.String()); err != ErrNotFound {
+		t.Errorf("GetFor across owners = %v, want ErrNotFound", err)
+	}
+	if err := reg.Delete("me@edspc.dev", theirs.ID.String()); err != ErrNotFound {
+		t.Errorf("Delete across owners = %v, want ErrNotFound", err)
+	}
+	if _, err := reg.Get(theirs.ID.String()); err != nil {
+		t.Errorf("Get (the callback path) = %v, want it to ignore ownership", err)
+	}
+
+	// Len counts the process, not one account.
+	if got := reg.Len(); got != 3 {
+		t.Errorf("Len() = %d, want 3", got)
 	}
 }

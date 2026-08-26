@@ -21,6 +21,8 @@ func NewEndpoints(db *store.Endpoints) Endpoints { return Endpoints{db: db} }
 func (e Endpoints) Save(s endpoint.Stored) error {
 	return e.db.Save(store.Record{
 		ID:        s.ID,
+		Owner:     s.Owner,
+		Shared:    s.Shared,
 		Name:      s.Name,
 		CreatedAt: s.CreatedAt,
 		Spec:      s.Spec,
@@ -46,6 +48,8 @@ func (e Endpoints) List() ([]endpoint.Stored, error) {
 	for _, r := range records {
 		out = append(out, endpoint.Stored{
 			ID:        r.ID,
+			Owner:     r.Owner,
+			Shared:    r.Shared,
 			Name:      r.Name,
 			CreatedAt: r.CreatedAt,
 			Spec:      r.Spec,

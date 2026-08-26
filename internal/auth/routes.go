@@ -64,6 +64,15 @@ func (a *Auth) Routes(mux *http.ServeMux, prefix string) {
 	})
 }
 
+// StartSession writes the session cookie that marks the caller as email. It is
+// the last step of a completed sign-in, exported so a session can also be
+// established without an OAuth round trip — which is how the tests get one.
+func (a *Auth) StartSession(w http.ResponseWriter, email string) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	expires := time.Now().Add(sessionTTL)
+	a.setCookie(w, sessionCookie, a.sign(email+"|"+strconv.FormatInt(expires.Unix(), 10)), sessionTTL)
+}
+
 func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	fail := func(status int, msg string, args ...any) {
 		a.log.Warn("sign-in failed", args...)
@@ -106,8 +115,7 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.clearCookie(w, stateCookie)
-	expires := time.Now().Add(sessionTTL)
-	a.setCookie(w, sessionCookie, a.sign(email+"|"+strconv.FormatInt(expires.Unix(), 10)), sessionTTL)
+	a.StartSession(w, email)
 	a.log.Info("signed in", "email", email)
 	// Written by hand rather than with http.Redirect, which resolves a relative
 	// target against the request path and would hand the browser an absolute

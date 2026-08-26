@@ -21,6 +21,8 @@ const DefaultHistory = mock.DefaultRecorderCapacity
 // Stored is one persisted endpoint, as the store hands it back.
 type Stored struct {
 	ID        string
+	Owner     string
+	Shared    []string
 	Name      string
 	CreatedAt time.Time
 	Spec      json.RawMessage
@@ -98,7 +100,10 @@ func (r *Registry) Restore() error {
 			r.log.Warn("skipping stored endpoint with an unparseable id", "id", rec.ID, "error", err)
 			continue
 		}
-		e := newEndpoint(id, rec.Name, rec.CreatedAt, r.historyFor(rec.ID))
+		e := newEndpoint(id, rec.Owner, rec.Name, rec.CreatedAt, r.historyFor(rec.ID))
+		if err := e.SetShared(rec.Shared); err != nil {
+			r.log.Warn("dropping an unreadable share list", "id", rec.ID, "error", err)
+		}
 		var spec Spec
 		if len(rec.Spec) > 0 {
 			if err := json.Unmarshal(rec.Spec, &spec); err != nil {
@@ -150,6 +155,8 @@ func (r *Registry) record(e *Endpoint) Stored {
 	}
 	return Stored{
 		ID:        e.ID.String(),
+		Owner:     e.Owner,
+		Shared:    e.Shared(),
 		Name:      e.Name(),
 		CreatedAt: e.CreatedAt,
 		Spec:      spec,
@@ -157,8 +164,9 @@ func (r *Registry) record(e *Endpoint) Stored {
 	}
 }
 
-// Create registers a new endpoint with a fresh UUIDv8.
-func (r *Registry) Create(name string) (*Endpoint, error) {
+// Create registers a new endpoint with a fresh UUIDv8, owned by owner. An
+// empty owner is the anonymous one, used when sign-in is off.
+func (r *Registry) Create(owner, name string) (*Endpoint, error) {
 	id, err := uuid.NewV8()
 	if err != nil {
 		return nil, err
@@ -167,7 +175,7 @@ func (r *Registry) Create(name string) (*Endpoint, error) {
 	historyFor := r.historyFor
 	r.mu.RUnlock()
 
-	e := newEndpoint(id, name, id.Time(), historyFor(id.String()))
+	e := newEndpoint(id, owner, name, id.Time(), historyFor(id.String()))
 	r.attach(e)
 
 	if r.store != nil {
@@ -184,7 +192,9 @@ func (r *Registry) Create(name string) (*Endpoint, error) {
 	return e, nil
 }
 
-// Get resolves an endpoint by its canonical UUID string.
+// Get resolves an endpoint by its canonical UUID string, whoever owns it.
+// This is the callback path: a third party posting to /cb/{id} has no
+// identity, and demanding one would defeat the service.
 func (r *Registry) Get(id string) (*Endpoint, error) {
 	u, err := uuid.Parse(id)
 	if err != nil {
@@ -199,15 +209,31 @@ func (r *Registry) Get(id string) (*Endpoint, error) {
 	return e, nil
 }
 
-// Delete removes an endpoint and everything it captured.
-func (r *Registry) Delete(id string) error {
+// GetFor resolves an endpoint the way the control API must: one that caller
+// neither owns nor has been given is not found, rather than forbidden. Its URL
+// is public anyway, so there is nothing to be gained by distinguishing the
+// two.
+func (r *Registry) GetFor(caller, id string) (*Endpoint, error) {
+	e, err := r.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !e.AccessibleBy(caller) {
+		return nil, ErrNotFound
+	}
+	return e, nil
+}
+
+// Delete removes an endpoint and everything it captured. It is scoped like
+// GetFor: everyone the endpoint reaches has the same access to it.
+func (r *Registry) Delete(caller, id string) error {
 	u, err := uuid.Parse(id)
 	if err != nil {
 		return ErrNotFound
 	}
 	r.mu.Lock()
 	e, ok := r.byID[u]
-	if !ok {
+	if !ok || !e.AccessibleBy(caller) {
 		r.mu.Unlock()
 		return ErrNotFound
 	}
@@ -229,13 +255,16 @@ func (r *Registry) Delete(id string) error {
 	return nil
 }
 
-// List returns every endpoint, newest first. IDs are time-ordered, so sorting
-// by ID string is sorting by creation time.
-func (r *Registry) List() []*Endpoint {
+// List returns the endpoints caller can reach — their own and the ones shared
+// with them — newest first. IDs are time-ordered, so sorting by ID string is
+// sorting by creation time.
+func (r *Registry) List(caller string) []*Endpoint {
 	r.mu.RLock()
 	out := make([]*Endpoint, 0, len(r.byID))
 	for _, e := range r.byID {
-		out = append(out, e)
+		if e.AccessibleBy(caller) {
+			out = append(out, e)
+		}
 	}
 	r.mu.RUnlock()
 
@@ -245,9 +274,36 @@ func (r *Registry) List() []*Endpoint {
 	return out
 }
 
-// Len is the number of registered endpoints.
+// Len is the number of registered endpoints, all owners together. It is a
+// process-wide figure — for what one account can see, use Count.
 func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.byID)
+}
+
+// Count is how many endpoints caller can reach.
+func (r *Registry) Count(caller string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, e := range r.byID {
+		if e.AccessibleBy(caller) {
+			n++
+		}
+	}
+	return n
+}
+
+// CountOwned is how many endpoints caller owns outright, shared ones excluded.
+func (r *Registry) CountOwned(owner string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, e := range r.byID {
+		if e.Owner == owner {
+			n++
+		}
+	}
+	return n
 }

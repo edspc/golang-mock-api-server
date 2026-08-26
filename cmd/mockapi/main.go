@@ -165,6 +165,19 @@ func run() error {
 	if guard.Enabled() {
 		log.Info("sign-in: google oauth required for the control API",
 			"redirect", strings.TrimSuffix(authConfig(*addr).BaseURL, "/")+server.AdminPrefix+"auth/callback")
+		if !guard.Restricted() {
+			// Not a warning: it is a supported setup, and the operator should
+			// know which one they are running.
+			log.Info("sign-in: open to any google account; each one sees only the endpoints it created",
+				"restrict_with", envAllowedEmails+" or "+envAllowedDomain)
+		}
+		// Endpoints restored with no owner were created while sign-in was
+		// off. They keep serving callbacks, but no account can see them —
+		// say so once rather than let them look lost.
+		if orphans := registry.Count(""); orphans > 0 {
+			log.Warn("sign-in: endpoints created before sign-in was enabled are not visible to any account",
+				"count", orphans, "note", "they keep answering callbacks")
+		}
 	} else {
 		log.Info("sign-in: disabled", "reason", envClientID+" and "+envClientSecret+" are unset")
 	}

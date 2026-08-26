@@ -13,10 +13,25 @@ const (
 	EventReset   = "reset" // captured history cleared
 )
 
+// Reaches reports whether caller is in the event's audience.
+func (e Event) Reaches(caller string) bool {
+	for _, who := range e.Audience {
+		if who == caller {
+			return true
+		}
+	}
+	return false
+}
+
 // Event is one change worth telling a live console about.
 type Event struct {
 	Type     string `json:"type"`
 	Endpoint string `json:"endpoint"`
+	// Audience is everyone the endpoint is visible to: its owner and whoever
+	// it is shared with. It never reaches a subscriber — it is what the
+	// stream handler filters on, so one account's traffic is not announced to
+	// another.
+	Audience []string `json:"-"`
 	// Received is the endpoint's lifetime counter at the time of the event.
 	// It is what the listing shows, so carrying it lets a subscriber update a
 	// counter without a round trip.
@@ -92,5 +107,10 @@ func (r *Registry) Subscribe() (<-chan Event, func()) {
 func (r *Registry) Subscribers() int { return r.events.subscribers() }
 
 func (r *Registry) publish(e *Endpoint, kind string) {
-	r.events.publish(Event{Type: kind, Endpoint: e.ID.String(), Received: e.Received()})
+	r.events.publish(Event{
+		Type:     kind,
+		Endpoint: e.ID.String(),
+		Audience: e.Audience(),
+		Received: e.Received(),
+	})
 }

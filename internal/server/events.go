@@ -42,6 +42,13 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	// The broker is registry-wide, so the stream is where events are matched
+	// to the account watching: an event reaches the endpoint's owner and
+	// whoever it is shared with. Without this, one account would learn that
+	// another is receiving callbacks — and re-read its own listing for
+	// nothing on every one of them.
+	caller := s.auth.Caller(r)
+
 	events, unsubscribe := s.endpoints.Subscribe()
 	defer unsubscribe()
 
@@ -67,6 +74,9 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 		case ev, ok := <-events:
 			if !ok {
 				return
+			}
+			if !ev.Reaches(caller) {
+				continue
 			}
 			payload, err := json.Marshal(ev)
 			if err != nil {

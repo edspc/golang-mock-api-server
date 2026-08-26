@@ -72,9 +72,15 @@ service. `TestCallbacksStayOpenWhenSignInIsRequired` pins that.
 
 - A nil `*Auth` is a valid, disabled guard, so the no-credentials default needs
   no branching at the call sites.
-- `New` refuses to enable sign-in without an allowed email list or domain.
-  Google sign-in with no allowlist authenticates everyone on earth, which is
-  not authentication; failing to start is the safe answer.
+- The allowlists are optional. Sign-in with no allowlist lets anyone in, which
+  is safe only because endpoints are owned: an uninvited visitor gets an empty
+  console of their own. `New` used to refuse this setup; it no longer does, and
+  ownership is what replaced the refusal — do not weaken one without
+  reinstating the other.
+- `Caller(r)` is the identity everything hangs from: the session email
+  lowercased, or `""` when sign-in is off. Guard has already rejected anonymous
+  control traffic by the time a handler asks, so `""` there means *disabled*,
+  not *unauthenticated*.
 - `/api/auth/*` is the only control path Guard lets through unauthenticated —
   the console has to be able to ask whether sign-in is needed and to start it.
 - The OAuth `state` is signed into a short-lived cookie and compared on the way
@@ -112,15 +118,32 @@ service. `TestCallbacksStayOpenWhenSignInIsRequired` pins that.
   third, wired by `attach` whether or not anything is persisted.
 - `SetSpec` validates and compiles the whole spec *before* taking the lock, so
   a rejected edit cannot leave an endpoint half-updated.
-- The `name` is behind the same lock as the spec rather than an exported field,
-  because `SetName` makes it mutable while every listing reads it. Renaming
-  changes the label only — the URL is the endpoint's identity, so it cannot
-  break a third party already calling it.
+- The `name` and the share list are behind the same lock as the spec rather
+  than exported fields, because `SetName`/`SetShared` make them mutable while
+  every listing reads them. Renaming changes the label only — the URL is the
+  endpoint's identity, so it cannot break a third party already calling it.
+- **`Owner` is fixed at creation and `""` is an identity, not a blank.** An
+  endpoint is reachable by its owner and whoever it is shared with
+  (`AccessibleBy`), so endpoints made with sign-in off belong to the anonymous
+  owner and become invisible to everyone the moment sign-in goes on — the safe
+  direction, and the reason there is no "adopt these" path.
+- `List`, `Count`, `GetFor` and `Delete` are all caller-scoped; `Get` is not,
+  because it is the callback path and a third party has no identity to scope
+  by. An unreachable endpoint is `ErrNotFound`, never a forbidden — its URL is
+  public, so distinguishing the two only confirms ids.
+- Sharing grants exactly one level of access: everyone on the list can do what
+  the owner can. The single exception is the share list itself, and that rule
+  lives in the HTTP layer (`endpoints/{id}/share`), because only it knows who
+  is asking. Keep it there — `SetShared` deliberately does not take a caller.
 - `events.go` is the notification broker: one `Registry`-wide fan-out feeding
   the SSE handler. Two rules make it safe on the callback path — publishing
   never blocks (a subscriber that stops draining loses events), and an `Event`
   says only *what* changed, so a dropped one costs latency and nothing else.
   Do not grow it into a second copy of the endpoint API; subscribers re-read.
+  The fan-out is registry-wide, so every `Event` carries the endpoint's
+  `Audience` (never serialized) and `serveEvents` drops the ones that do not
+  reach the account watching. Without that filter one account learns when
+  another is receiving callbacks.
 - `Endpoint.Handle` decides (validate → match rules → default response) and
   records, but **writes nothing**. All HTTP writing lives in
   `server/callback.go`. Keep that split: it is what makes the decision logic
@@ -163,8 +186,9 @@ cannot make the service unbootable.
 Schema changes go through `addColumn`, which is a no-op when the column is
 already there: SQLite has no `ADD COLUMN IF NOT EXISTS`, and a database written
 by an older build must keep opening rather than fail at startup. Rows written
-before a column existed simply have its zero value — `request_id` is the first
-of these.
+before a column existed simply have its zero value — `request_id`, `owner` and
+`shared` are all of these, and for `owner` that zero value is exactly the
+behaviour wanted: an endpoint stored before sign-in existed belongs to nobody.
 
 ### `internal/uuid`
 

@@ -58,6 +58,8 @@
             <div class="name-row" id="name-display">
               <h2 id="ep-name"></h2>
               <button id="rename-endpoint" class="ghost" title="Rename this endpoint">Rename</button>
+              <button id="share-endpoint" class="ghost" title="Give other accounts access" hidden>Share</button>
+              <span id="ep-shared-by" class="tag" hidden></span>
             </div>
             <form class="name-row" id="rename-form" hidden>
               <input id="rename-input" type="text" maxlength="200" placeholder="Name (optional)" autocomplete="off">
@@ -68,6 +70,26 @@
               <code id="ep-url" class="url"></code>
               <button id="copy-url" class="ghost" title="Copy full URL">Copy</button>
             </div>
+            <div class="share" id="share-panel" hidden>
+              <label for="share-input">Shared with</label>
+              <div id="share-list" class="share-list"></div>
+              <!-- novalidate: the console reports a bad address in its own error line,
+                   where the rest of the form's mistakes are reported, rather than
+                   through a native tooltip that our handler never sees. -->
+              <form id="share-add" class="share-add" novalidate>
+                <input id="share-input" type="email" placeholder="colleague@example.com"
+                       autocomplete="off" spellcheck="false">
+                <button type="submit" class="ghost">Add</button>
+              </form>
+              <p class="hint">Everyone here gets the access you have: they can read this
+                endpoint's traffic, edit its spec and delete it. Only you can change this list.</p>
+              <div class="share-actions">
+                <button id="share-save" class="primary">Save</button>
+                <button id="share-cancel" class="ghost">Cancel</button>
+                <span id="share-error" class="error" hidden></span>
+              </div>
+            </div>
+
             <div class="meta">
               <span>id <code id="ep-id"></code></span>
               <span>created <span id="ep-created"></span></span>

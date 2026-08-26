@@ -159,11 +159,6 @@ func TestAuthConfigRefusesUnsafeSetups(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name:    "no allowlist would let in any google account",
-			cfg:     auth.Config{ClientID: "id", ClientSecret: "s", BaseURL: "https://x"},
-			wantSub: "allowed email list or domain",
-		},
-		{
 			name:    "secret without id",
 			cfg:     auth.Config{ClientSecret: "s"},
 			wantSub: "client id and a client secret",
@@ -187,6 +182,26 @@ func TestAuthConfigRefusesUnsafeSetups(t *testing.T) {
 	}
 }
 
+// Sign-in without an allowlist is a supported setup: anyone may sign in, and
+// gets a console holding only what they created themselves.
+func TestSignInWithoutAnAllowlistIsAllowed(t *testing.T) {
+	guard, err := auth.New(auth.Config{ClientID: "id", ClientSecret: "s", BaseURL: "https://x"}, nil)
+	if err != nil {
+		t.Fatalf("auth.New() error = %v, want an open sign-in to be accepted", err)
+	}
+	if !guard.Enabled() {
+		t.Fatal("guard is not enabled with a client id, secret and base URL")
+	}
+	if guard.Restricted() {
+		t.Error("Restricted() = true with no allowlist configured")
+	}
+	for _, email := range []string{"anyone@example.com", "someone@else.com"} {
+		if !guard.Allows(email) {
+			t.Errorf("Allows(%q) = false, want everyone in when no allowlist is set", email)
+		}
+	}
+}
+
 func TestAllowlist(t *testing.T) {
 	guard, err := auth.New(auth.Config{
 		ClientID: "id", ClientSecret: "s", BaseURL: "https://x",
@@ -195,6 +210,9 @@ func TestAllowlist(t *testing.T) {
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !guard.Restricted() {
+		t.Error("Restricted() = false with an allowlist configured")
 	}
 
 	tests := []struct {
