@@ -29,10 +29,15 @@ than a default.
 ## Releases
 
 `.github/workflows/release.yml` fires on a `v*` tag. It runs lint and tests
-before building, so a tag cannot publish something CI would have rejected, and
-cross-compiles every target from one runner with `CGO_ENABLED=0` — possible
+before building, so a tag cannot publish something CI would have rejected.
+
+The build itself is `make dist`, not a script in the workflow: the flags live
+in one place, so a binary built by hand is the one a tag would publish.
+`CGO_ENABLED=0` is what lets one runner cross-compile every target — possible
 only because the SQLite driver is pure Go. Keep it that way: a cgo dependency
-would turn this into a matrix of per-OS runners.
+would turn this into a matrix of per-OS runners. `-trimpath` keeps local paths
+out and makes the build reproducible; `-s -w` drops a third of the size and
+still leaves function names in a panic.
 
 The version is stamped with `-X main.version`, and `main.version` defaults to
 `"dev"` so an unstamped binary never claims to be a release. Publishing uses
