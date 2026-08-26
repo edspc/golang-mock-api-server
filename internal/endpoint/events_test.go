@@ -11,7 +11,7 @@ func TestSubscribeReceivesEveryKind(t *testing.T) {
 	events, unsubscribe := r.Subscribe()
 	defer unsubscribe()
 
-	ep, err := r.Create("first")
+	ep, err := r.Create("", "first")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestSubscribeReceivesEveryKind(t *testing.T) {
 		t.Errorf("after ResetRequests got = %+v, want %s", ev, EventReset)
 	}
 
-	if err := r.Delete(ep.ID.String()); err != nil {
+	if err := r.Delete("", ep.ID.String()); err != nil {
 		t.Fatal(err)
 	}
 	// Deleting drops the captured traffic, but that is part of the deletion —
@@ -77,7 +77,7 @@ func TestUnsubscribe(t *testing.T) {
 	if _, open := <-events; open {
 		t.Error("the channel is still delivering after unsubscribe")
 	}
-	if _, err := r.Create("after"); err != nil {
+	if _, err := r.Create("", "after"); err != nil {
 		t.Errorf("Create with no subscribers: %v", err)
 	}
 }
@@ -89,7 +89,7 @@ func TestPublishDoesNotBlockOnASlowSubscriber(t *testing.T) {
 	_, unsubscribe := r.Subscribe() // never drained
 	defer unsubscribe()
 
-	ep, err := r.Create("busy")
+	ep, err := r.Create("", "busy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestPublishDoesNotBlockOnASlowSubscriber(t *testing.T) {
 // Subscribers come and go while traffic is arriving. Run with -race.
 func TestBrokerIsRaceFree(t *testing.T) {
 	r := NewRegistry(10)
-	ep, err := r.Create("racy")
+	ep, err := r.Create("", "racy")
 	if err != nil {
 		t.Fatal(err)
 	}

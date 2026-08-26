@@ -104,9 +104,14 @@ func (s *Server) serveCallback(w http.ResponseWriter, r *http.Request) {
 
 // endpointView is the control-API projection of an endpoint.
 type endpointView struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name,omitempty"`
-	URL       string        `json:"url"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	URL  string `json:"url"`
+	// Owner and Shared are omitted entirely when sign-in is off: with no
+	// accounts there is nobody to own anything, and an empty "owner" in every
+	// response would only invite the question.
+	Owner     string        `json:"owner,omitempty"`
+	Shared    []string      `json:"shared,omitempty"`
 	CreatedAt string        `json:"createdAt"`
 	Received  int64         `json:"received"`
 	Spec      endpoint.Spec `json:"spec"`
@@ -117,6 +122,8 @@ func viewOf(e *endpoint.Endpoint) endpointView {
 		ID:        e.ID.String(),
 		Name:      e.Name(),
 		URL:       CallbackPrefix + e.ID.String(),
+		Owner:     e.Owner,
+		Shared:    e.Shared(),
 		CreatedAt: e.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
 		Received:  e.Received(),
 		Spec:      e.Spec(),
@@ -135,7 +142,7 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		ep, err := s.endpoints.Create(req.Name)
+		ep, err := s.endpoints.Create(s.auth.Caller(r), req.Name)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -144,17 +151,17 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 			if err := ep.SetSpec(*req.Spec); err != nil {
 				// Roll back rather than leave an endpoint the caller never
 				// successfully configured.
-				_ = s.endpoints.Delete(ep.ID.String())
+				_ = s.endpoints.Delete(ep.Owner, ep.ID.String())
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
 		}
-		s.log.Info("endpoint created", "id", ep.ID.String(), "name", ep.Name())
+		s.log.Info("endpoint created", "id", ep.ID.String(), "name", ep.Name(), "owner", ep.Owner)
 		writeJSON(w, http.StatusCreated, viewOf(ep))
 	})
 
 	mux.HandleFunc("GET "+AdminPrefix+"endpoints", func(w http.ResponseWriter, r *http.Request) {
-		list := s.endpoints.List()
+		list := s.endpoints.List(s.auth.Caller(r))
 		views := make([]endpointView, 0, len(list))
 		for _, e := range list {
 			views = append(views, viewOf(e))
@@ -171,7 +178,7 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("DELETE "+AdminPrefix+"endpoints/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.endpoints.Delete(r.PathValue("id")); err != nil {
+		if err := s.endpoints.Delete(s.auth.Caller(r), r.PathValue("id")); err != nil {
 			writeNotFound(w, r.PathValue("id"))
 			return
 		}
@@ -200,6 +207,48 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 			return
 		}
 		s.log.Info("endpoint renamed", "id", ep.ID.String(), "from", was, "to", ep.Name())
+		writeJSON(w, http.StatusOK, viewOf(ep))
+	})
+
+	// Sharing gives another account the same access the owner has — reading
+	// the traffic, editing the spec, deleting it. The one thing it does not
+	// pass on is this route: only the owner decides who else is on the list,
+	// so a shared account cannot widen its own reach.
+	mux.HandleFunc("PUT "+AdminPrefix+"endpoints/{id}/share", func(w http.ResponseWriter, r *http.Request) {
+		ep, ok := s.lookup(w, r)
+		if !ok {
+			return
+		}
+		caller := s.auth.Caller(r)
+		if !s.auth.Enabled() {
+			// Without sign-in there are no accounts to share with, and every
+			// caller is already the same anonymous one.
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "sharing needs sign-in; configure google oauth to use it",
+			})
+			return
+		}
+		if ep.Owner != caller {
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "only the owner can share this endpoint",
+				"owner": ep.Owner,
+			})
+			return
+		}
+		var req struct {
+			Shared []string `json:"shared"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parse share list: " + err.Error()})
+			return
+		}
+		if err := ep.SetShared(req.Shared); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		s.log.Info("endpoint shared", "id", ep.ID.String(), "owner", ep.Owner, "with", len(ep.Shared()))
 		writeJSON(w, http.StatusOK, viewOf(ep))
 	})
 
@@ -249,9 +298,12 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 	})
 }
 
+// lookup resolves the endpoint a control request names, scoped to whoever is
+// asking. Callback traffic never comes through here — it is dispatched before
+// the guard and has no identity to scope by.
 func (s *Server) lookup(w http.ResponseWriter, r *http.Request) (*endpoint.Endpoint, bool) {
 	id := r.PathValue("id")
-	ep, err := s.endpoints.Get(id)
+	ep, err := s.endpoints.GetFor(s.auth.Caller(r), id)
 	if err != nil {
 		writeNotFound(w, id)
 		return nil, false

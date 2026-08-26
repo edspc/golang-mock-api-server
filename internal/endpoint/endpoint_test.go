@@ -21,7 +21,7 @@ func mustSpec(t *testing.T, raw string) Spec {
 
 func testEndpoint(t *testing.T, rawSpec string) *Endpoint {
 	t.Helper()
-	e, err := New("test", 10)
+	e, err := New("", "test", 10)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

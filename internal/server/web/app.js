@@ -37,6 +37,10 @@ const state = {
   stream: null,
   live: false,
   auth: true,
+  authEnabled: false,
+  email: '',
+  sharing: false,
+  shareDraft: [],
   expanded: new Set(),
   lastRequestsJSON: '',
   specDirty: false,
@@ -149,6 +153,10 @@ async function loadAuth() {
     return false;
   }
   state.auth = true;
+  state.authEnabled = !!status.enabled;
+  // Who we are is what every ownership decision in the console compares
+  // against, so it is kept exactly as the server reports it.
+  state.email = (status.email || '').toLowerCase();
   $('signin').hidden = true;
   document.querySelector('main').hidden = false;
   if (status.enabled) {
@@ -212,13 +220,20 @@ function renderEndpoints() {
       ? el('div', { class: 'ep-name', text: ep.name })
       : el('div', { class: 'ep-name untitled', text: 'untitled' });
 
+    // An endpoint someone else owns behaves like your own, so say where it
+    // came from rather than let it look like one you forgot creating.
+    const borrowed = ep.owner && ep.owner !== state.email;
+
     list.appendChild(el('button', {
       class: 'ep' + (ep.id === state.selectedId ? ' is-active' : ''),
       onclick: () => selectEndpointInteractive(ep.id),
     }, [
       name,
       el('div', { class: 'ep-id', text: ep.id }),
-      el('div', { class: 'ep-count', text: `${ep.received} received` }),
+      el('div', { class: 'ep-count' }, [
+        document.createTextNode(`${ep.received} received`),
+        borrowed ? el('span', { class: 'tag', text: 'shared' }) : null,
+      ]),
     ]));
   }
 }
@@ -244,6 +259,7 @@ async function selectEndpoint(id) {
   state.expanded.clear();
   state.lastRequestsJSON = '';
   stopRename();
+  stopShare();
   renderEndpoints();
 
   const detail = $('endpoint-detail');
@@ -265,6 +281,17 @@ function renderEndpointHead() {
   const ep = selectedEndpoint();
   if (!ep) return;
   $('ep-name').textContent = ep.name || 'untitled endpoint';
+
+  // Only the owner can hand out access. Someone the endpoint was shared with
+  // sees whose it is instead, so an endpoint they did not create is never a
+  // mystery.
+  const mine = state.authEnabled && ep.owner && ep.owner === state.email;
+  $('share-endpoint').hidden = !mine;
+  const sharedWithMe = ep.owner && ep.owner !== state.email;
+  $('ep-shared-by').hidden = !sharedWithMe;
+  $('ep-shared-by').textContent = sharedWithMe ? 'shared by ' + ep.owner : '';
+  if (state.sharing && !mine) stopShare();
+
   // Rebased, not pinned to the origin: this is the URL the user copies and
   // hands to a third party, so it has to include the mount point.
   $('ep-url').textContent = href(ep.url);
@@ -310,6 +337,94 @@ async function saveName() {
     toast('Endpoint renamed');
   } catch (e) {
     toast(e.message);
+  }
+}
+
+/* ---------- sharing ---------- */
+
+// The panel edits a draft rather than the endpoint: nothing is shared until
+// Save, and a poll re-rendering the head cannot swallow a half-typed address.
+function startShare() {
+  const ep = selectedEndpoint();
+  if (!ep) return;
+  state.sharing = true;
+  state.shareDraft = (ep.shared || []).slice();
+  $('share-error').hidden = true;
+  $('share-input').value = '';
+  $('share-panel').hidden = false;
+  renderShareDraft();
+  $('share-input').focus();
+}
+
+function stopShare() {
+  state.sharing = false;
+  state.shareDraft = [];
+  $('share-panel').hidden = true;
+}
+
+function renderShareDraft() {
+  const list = $('share-list');
+  clear(list);
+  if (state.shareDraft.length === 0) {
+    list.appendChild(el('span', { class: 'muted', text: 'Nobody yet — this endpoint is yours alone.' }));
+    return;
+  }
+  for (const email of state.shareDraft) {
+    list.appendChild(el('span', { class: 'chip' }, [
+      el('span', { text: email }),
+      el('button', {
+        type: 'button',
+        class: 'chip-x',
+        title: `Remove ${email}`,
+        'aria-label': `Remove ${email}`,
+        text: '×',
+        onclick: () => {
+          state.shareDraft = state.shareDraft.filter((e) => e !== email);
+          renderShareDraft();
+        },
+      }),
+    ]));
+  }
+}
+
+function addToShareDraft() {
+  const input = $('share-input');
+  const email = input.value.trim().toLowerCase();
+  const ep = selectedEndpoint();
+  const fail = (message) => {
+    $('share-error').textContent = message;
+    $('share-error').hidden = false;
+  };
+  if (!email) return;
+  if (!email.includes('@')) return fail(`${email} is not an email address`);
+  if (ep && email === ep.owner) return fail('You already own this endpoint');
+  if (state.shareDraft.includes(email)) return fail(`${email} is already on the list`);
+
+  state.shareDraft.push(email);
+  input.value = '';
+  $('share-error').hidden = true;
+  renderShareDraft();
+}
+
+async function saveShare() {
+  const ep = selectedEndpoint();
+  if (!ep) return;
+  // A half-typed address in the box is what the user meant to add; taking it
+  // along beats silently dropping it.
+  if ($('share-input').value.trim()) {
+    addToShareDraft();
+    if (!$('share-error').hidden) return;
+  }
+  try {
+    const updated = await api('PUT', `${API}/endpoints/${ep.id}/share`,
+      JSON.stringify({ shared: state.shareDraft }));
+    ep.shared = updated.shared || [];
+    stopShare();
+    renderEndpointHead();
+    toast(ep.shared.length ? `Shared with ${ep.shared.length}` : 'Sharing stopped');
+  } catch (e) {
+    $('share-error').textContent = e.message;
+    $('share-error').hidden = false;
   }
 }
 
@@ -961,6 +1076,20 @@ function wire() {
   });
   $('rename-input').addEventListener('keydown', (e) => {
     if (e.key === 'Escape') stopRename();
+  });
+
+  $('share-endpoint').addEventListener('click', () => {
+    if (state.sharing) stopShare();
+    else startShare();
+  });
+  $('share-cancel').addEventListener('click', stopShare);
+  $('share-save').addEventListener('click', saveShare);
+  $('share-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    addToShareDraft();
+  });
+  $('share-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') stopShare();
   });
 
   $('copy-url').addEventListener('click', () => copyText($('ep-url'), 'URL copied'));

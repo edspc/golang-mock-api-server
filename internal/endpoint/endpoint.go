@@ -69,18 +69,30 @@ type History interface {
 // unbounded one would be stored and re-sent on every listing.
 const MaxNameLength = 200
 
+// MaxShared caps how many accounts one endpoint can be shared with. Sharing is
+// for a handful of colleagues; a list of thousands is a different feature.
+const MaxShared = 50
+
 // Endpoint is one callback URL and everything captured on it.
 type Endpoint struct {
 	ID        uuid.UUID
 	CreatedAt time.Time
 
-	// mu guards name, spec and rules. The name is mutable — it is read on
-	// every listing while a rename may be in flight — so it lives behind the
-	// lock rather than in an exported field.
-	mu    sync.RWMutex
-	name  string
-	spec  Spec
-	rules []*mock.Rule
+	// Owner is the account that created this endpoint, or "" when it was
+	// created with sign-in switched off. It is fixed at creation: an endpoint
+	// is listed only to the identity that owns it, and "" is an identity like
+	// any other — so turning sign-in on hides the endpoints made before it
+	// from everyone, which is the safe direction.
+	Owner string
+
+	// mu guards name, shared, spec and rules. The name and the share list are
+	// mutable — both are read on every listing while an edit may be in flight
+	// — so they live behind the lock rather than in exported fields.
+	mu     sync.RWMutex
+	name   string
+	shared []string
+	spec   Spec
+	rules  []*mock.Rule
 
 	history  History
 	received atomic.Int64
@@ -126,18 +138,96 @@ func (e *Endpoint) SetName(name string) error {
 	return nil
 }
 
+// Shared lists the accounts the owner has given access to.
+func (e *Endpoint) Shared() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.shared) == 0 {
+		return nil
+	}
+	return append([]string(nil), e.shared...)
+}
+
+// SetShared replaces the list of accounts this endpoint is shared with.
+// Addresses are lowercased, trimmed and deduplicated, so the stored list is
+// exactly what a session email will be compared against.
+//
+// Only the owner may call this — that is enforced by the HTTP layer, which is
+// the only place that knows who is asking.
+func (e *Endpoint) SetShared(emails []string) error {
+	clean := make([]string, 0, len(emails))
+	seen := make(map[string]bool, len(emails))
+	for _, raw := range emails {
+		email := strings.ToLower(strings.TrimSpace(raw))
+		if email == "" {
+			continue
+		}
+		if len(email) > MaxNameLength {
+			return fmt.Errorf("%q is too long for an address", raw)
+		}
+		if !strings.Contains(email, "@") {
+			return fmt.Errorf("%q is not an email address", raw)
+		}
+		// The owner already has access; carrying them in the list too would
+		// make revoking their own access look possible.
+		if email == e.Owner || seen[email] {
+			continue
+		}
+		seen[email] = true
+		clean = append(clean, email)
+	}
+	if len(clean) > MaxShared {
+		return fmt.Errorf("shared with %d accounts, the maximum is %d", len(clean), MaxShared)
+	}
+
+	e.mu.Lock()
+	e.shared = clean
+	e.mu.Unlock()
+
+	if e.onSave != nil {
+		e.onSave(e)
+	}
+	e.announce(EventUpdated)
+	return nil
+}
+
+// AccessibleBy reports whether caller may manage this endpoint. The owner and
+// everyone it is shared with have the same access; only the owner may change
+// who is on the list, which is a rule the HTTP layer applies.
+func (e *Endpoint) AccessibleBy(caller string) bool {
+	if e.Owner == caller {
+		return true
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, email := range e.shared {
+		if email == caller {
+			return true
+		}
+	}
+	return false
+}
+
+// Audience is everyone who may see this endpoint: its owner first, then the
+// accounts it is shared with. It is what the event stream filters on.
+func (e *Endpoint) Audience() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return append([]string{e.Owner}, e.shared...)
+}
+
 // New creates an endpoint with a fresh UUIDv8, an empty spec and an in-memory
 // history of the given size.
-func New(name string, history int) (*Endpoint, error) {
+func New(owner, name string, history int) (*Endpoint, error) {
 	id, err := uuid.NewV8()
 	if err != nil {
 		return nil, err
 	}
-	return newEndpoint(id, name, id.Time(), mock.NewRecorder(history)), nil
+	return newEndpoint(id, owner, name, id.Time(), mock.NewRecorder(history)), nil
 }
 
-func newEndpoint(id uuid.UUID, name string, created time.Time, h History) *Endpoint {
-	return &Endpoint{ID: id, name: name, CreatedAt: created, history: h}
+func newEndpoint(id uuid.UUID, owner, name string, created time.Time, h History) *Endpoint {
+	return &Endpoint{ID: id, Owner: owner, name: name, CreatedAt: created, history: h}
 }
 
 // Spec returns the endpoint's current behaviour.

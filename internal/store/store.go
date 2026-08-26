@@ -70,6 +70,8 @@ type Endpoints struct{ db *sql.DB }
 // store never needs to understand the spec format.
 type Record struct {
 	ID        string
+	Owner     string
+	Shared    []string
 	Name      string
 	CreatedAt time.Time
 	Spec      json.RawMessage
@@ -85,6 +87,8 @@ func OpenEndpoints(path string) (*Endpoints, error) {
 	const schema = `
 CREATE TABLE IF NOT EXISTS endpoints (
 	id         TEXT PRIMARY KEY,
+	owner      TEXT NOT NULL DEFAULT '',
+	shared     TEXT NOT NULL DEFAULT '[]',
 	name       TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	spec       TEXT NOT NULL DEFAULT '{}',
@@ -93,6 +97,17 @@ CREATE TABLE IF NOT EXISTS endpoints (
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create endpoints schema: %w", err)
+	}
+	// Endpoints stored before sign-in existed have no owner, and the empty
+	// owner is the anonymous one: they stay visible while sign-in is off and
+	// belong to nobody once it is on.
+	if err := addColumn(db, "endpoints", "owner", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := addColumn(db, "endpoints", "shared", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return &Endpoints{db: db}, nil
 }
@@ -106,10 +121,15 @@ func (e *Endpoints) Save(r Record) error {
 	if len(spec) == 0 {
 		spec = json.RawMessage("{}")
 	}
-	_, err := e.db.Exec(`
-INSERT INTO endpoints (id, name, created_at, spec, received) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET name = excluded.name, spec = excluded.spec, received = excluded.received`,
-		r.ID, r.Name, r.CreatedAt.UTC().Format(time.RFC3339Nano), string(spec), r.Received)
+	shared, err := json.Marshal(r.Shared)
+	if err != nil {
+		return fmt.Errorf("encode share list for %s: %w", r.ID, err)
+	}
+	_, err = e.db.Exec(`
+INSERT INTO endpoints (id, owner, shared, name, created_at, spec, received) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	shared = excluded.shared, name = excluded.name, spec = excluded.spec, received = excluded.received`,
+		r.ID, r.Owner, string(shared), r.Name, r.CreatedAt.UTC().Format(time.RFC3339Nano), string(spec), r.Received)
 	if err != nil {
 		return fmt.Errorf("save endpoint %s: %w", r.ID, err)
 	}
@@ -135,7 +155,7 @@ func (e *Endpoints) Delete(id string) error {
 
 // List returns every stored endpoint, oldest first.
 func (e *Endpoints) List() ([]Record, error) {
-	rows, err := e.db.Query(`SELECT id, name, created_at, spec, received FROM endpoints ORDER BY id`)
+	rows, err := e.db.Query(`SELECT id, owner, shared, name, created_at, spec, received FROM endpoints ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list endpoints: %w", err)
 	}
@@ -144,9 +164,12 @@ func (e *Endpoints) List() ([]Record, error) {
 	var out []Record
 	for rows.Next() {
 		var r Record
-		var created, spec string
-		if err := rows.Scan(&r.ID, &r.Name, &created, &spec, &r.Received); err != nil {
+		var created, spec, shared string
+		if err := rows.Scan(&r.ID, &r.Owner, &shared, &r.Name, &created, &spec, &r.Received); err != nil {
 			return nil, fmt.Errorf("scan endpoint: %w", err)
+		}
+		if err := json.Unmarshal([]byte(shared), &r.Shared); err != nil {
+			return nil, fmt.Errorf("decode share list for %s: %w", r.ID, err)
 		}
 		if r.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
 			return nil, fmt.Errorf("parse created_at for %s: %w", r.ID, err)

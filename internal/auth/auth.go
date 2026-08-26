@@ -43,9 +43,11 @@ type Config struct {
 	// BaseURL is the externally visible origin, used to build the redirect
 	// URI that must match the one registered with Google.
 	BaseURL string
-	// AllowedEmails and AllowedDomain decide who may manage endpoints. At
-	// least one must be set: without a restriction every Google account on
-	// earth would qualify, which is not authentication at all.
+	// AllowedEmails and AllowedDomain restrict who may sign in at all. Both
+	// may be left empty, which lets any Google account in — endpoints belong
+	// to the account that created them and are visible to no one else, so an
+	// uninvited visitor gets an empty console of their own rather than
+	// anything of yours.
 	AllowedEmails []string
 	AllowedDomain string
 }
@@ -78,11 +80,6 @@ func New(cfg Config, log *slog.Logger) (*Auth, error) {
 	if cfg.BaseURL == "" {
 		return nil, errors.New("auth: a base URL is required to build the OAuth redirect URI")
 	}
-	if len(cfg.AllowedEmails) == 0 && cfg.AllowedDomain == "" {
-		return nil, errors.New("auth: refusing to enable sign-in without an allowed email list or domain — " +
-			"otherwise any Google account could manage your endpoints")
-	}
-
 	// A per-process key means sessions end with the process. Endpoints may
 	// outlive it in SQLite, but a signing key on disk is a liability that
 	// buys only the convenience of staying signed in across a restart.
@@ -107,8 +104,38 @@ func New(cfg Config, log *slog.Logger) (*Auth, error) {
 // Enabled reports whether requests are actually being checked.
 func (a *Auth) Enabled() bool { return a != nil }
 
-// Allows reports whether an email may manage endpoints.
+// Caller identifies who is making a control request: the signed-in address,
+// or "" when sign-in is off. It is the key everything an account owns hangs
+// from, so it is always lowercased — exchange already does that, and a
+// mismatch here would hide someone's own endpoints from them.
+//
+// Guard has already refused anonymous control traffic by the time a handler
+// asks, so "" from here means sign-in is disabled, not unauthenticated.
+func (a *Auth) Caller(r *http.Request) string {
+	if !a.Enabled() {
+		return ""
+	}
+	s, ok := a.session(r)
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(s.Email)
+}
+
+// Restricted reports whether sign-in is limited to named addresses or a
+// domain. Without a restriction anyone may sign in, and sees only their own
+// endpoints.
+func (a *Auth) Restricted() bool {
+	return len(a.cfg.AllowedEmails) > 0 || a.cfg.AllowedDomain != ""
+}
+
+// Allows reports whether an email may sign in. With no allowlist configured
+// every address may — what it can then reach is its own endpoints and nothing
+// else.
 func (a *Auth) Allows(email string) bool {
+	if !a.Restricted() {
+		return true
+	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	for _, allowed := range a.cfg.AllowedEmails {
 		if strings.EqualFold(strings.TrimSpace(allowed), email) {

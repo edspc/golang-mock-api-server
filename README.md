@@ -85,24 +85,50 @@ either way**, since a third party posting to `/cb/{id}` has no way to sign in.
 | `GOOGLE_CLIENT_ID` | OAuth client id; sign-in is off unless set |
 | `GOOGLE_CLIENT_SECRET` | OAuth client secret |
 | `MOCKAPI_BASE_URL` | externally visible origin, e.g. `https://mock.example.com` — include the path prefix if the app is mounted under one (defaults to the listen address) |
-| `MOCKAPI_ALLOWED_EMAILS` | comma-separated addresses that may manage endpoints |
-| `MOCKAPI_ALLOWED_DOMAIN` | a whole domain that may, e.g. `example.com` |
+| `MOCKAPI_ALLOWED_EMAILS` | comma-separated addresses that may sign in (optional) |
+| `MOCKAPI_ALLOWED_DOMAIN` | a whole domain that may, e.g. `example.com` (optional) |
 
 Register `{MOCKAPI_BASE_URL}/api/auth/callback` as the redirect URI in the
 Google console; the startup log prints the exact value.
 
-At least one of `MOCKAPI_ALLOWED_EMAILS` or `MOCKAPI_ALLOWED_DOMAIN` is
-required — the server refuses to start otherwise, because sign-in with no
-allowlist would let any Google account on earth manage your endpoints. The
-allowlist is re-checked on every request, so removing someone takes effect
-immediately. Sessions are signed cookies valid for 12 hours and end with the
-process.
+Both allowlists are optional. Leave them unset and anyone with a Google
+account can sign in — and sees an empty console of their own, because
+endpoints belong to the account that created them. Set either one to decide
+who may sign in at all; it is re-checked on every request, so removing someone
+takes effect immediately. Sessions are signed cookies valid for 12 hours and
+end with the process.
+
+### Accounts and sharing
+
+With sign-in on, an endpoint belongs to whoever created it. Nobody else can
+list it, read its traffic or change it — a request for someone else's endpoint
+is a 404, not a 403, since its URL is public anyway.
+
+The owner can share it from the console's **Share** button, or over the API:
+
+```sh
+curl -X PUT localhost:8080/api/endpoints/$ID/share -d '{"shared":["colleague@example.com"]}'
+```
+
+There is exactly one level of access. Everyone the endpoint is shared with can
+do what the owner can — read the captured traffic, edit the spec, rename it,
+delete it — with a single exception: **only the owner can change the share
+list**, so access cannot be passed on. Sharing with a shorter list revokes;
+`{"shared":[]}` revokes everyone.
+
+Two things ownership never touches:
+
+- **Callback URLs.** `/cb/{id}` answers anyone, signed in or not. That is the
+  whole point of the service.
+- **Endpoints created before sign-in was enabled.** They belong to the
+  anonymous owner, so once sign-in is on no account can see them. They keep
+  answering callbacks, and the startup log says how many there are.
 
 ## The console
 
-At `/`: create endpoints, rename them, watch requests arrive, find one by its
-request id or filter by method, status or validation failure, inspect each
-one's headers, query and body, and build the validation, rules and responses
+At `/`: create endpoints, rename and share them, watch requests arrive, find
+one by its request id or filter by method, status or validation failure,
+inspect each one's headers, query and body, and build the validation, rules and responses
 through forms — no JSON typing, with import and export for moving a spec
 between endpoints.
 It is compiled into the binary — no build step, no npm, nothing to serve
@@ -154,6 +180,7 @@ Endpoints live in memory unless a database is configured (see
 | `GET /api/endpoints/{id}` | current spec and lifetime request count |
 | `DELETE /api/endpoints/{id}` | drop it and everything it captured |
 | `PUT /api/endpoints/{id}/name` | relabel it: `{"name":"stripe"}`; the URL never changes |
+| `PUT /api/endpoints/{id}/share` | give other accounts access: `{"shared":["a@b.com"]}` (owner only) |
 | `PUT /api/endpoints/{id}/spec` | replace the response and validation logic |
 | `GET /api/endpoints/{id}/requests` | captured requests, filtered by `method`, `status` and `invalid` |
 | `POST /api/endpoints/{id}/reset` | clear the captured history |

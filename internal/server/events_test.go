@@ -35,11 +35,21 @@ func liveServer(t *testing.T) (*Server, string) {
 
 func openStream(t *testing.T, base string) *stream {
 	t.Helper()
+	return openStreamAs(t, base, nil)
+}
+
+// openStreamAs opens the stream as one account, or as nobody when cookie is
+// nil.
+func openStreamAs(t *testing.T, base string, cookie *http.Cookie) *stream {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/events", nil)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
+	}
+	if cookie != nil {
+		req.AddCookie(cookie)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -310,3 +310,87 @@ VALUES ('ep-1', '2026-08-24T12:00:00Z', 'POST', 202)`)
 		t.Errorf("after appending: %+v, want the new row to carry its id", got)
 	}
 }
+
+func TestEndpointOwnerRoundTrips(t *testing.T) {
+	db := endpointsDB(t)
+	for _, r := range []Record{
+		{ID: "ep-1", Owner: "me@edspc.dev", Name: "mine", CreatedAt: time.Now().UTC()},
+		{ID: "ep-2", Owner: "", Name: "anonymous", CreatedAt: time.Now().UTC()},
+	} {
+		if err := db.Save(r); err != nil {
+			t.Fatalf("Save(%s) error = %v", r.ID, err)
+		}
+	}
+
+	got, err := db.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List() returned %d, want 2", len(got))
+	}
+	if got[0].Owner != "me@edspc.dev" || got[1].Owner != "" {
+		t.Errorf("owners = %q, %q; want the address and the anonymous one", got[0].Owner, got[1].Owner)
+	}
+}
+
+// Endpoints stored before sign-in existed have no owner. The database must
+// keep opening, and those rows must come back as anonymous — which is what
+// makes them invisible once sign-in is turned on.
+func TestOpeningAnEndpointsDatabaseWrittenWithoutOwners(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "endpoints.db")
+
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = old.Exec(`
+CREATE TABLE endpoints (
+	id         TEXT PRIMARY KEY,
+	name       TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	spec       TEXT NOT NULL DEFAULT '{}',
+	received   INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO endpoints (id, name, created_at, spec, received)
+VALUES ('ep-old', 'before sign-in', '2026-08-24T12:00:00Z', '{}', 7)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := OpenEndpoints(path)
+	if err != nil {
+		t.Fatalf("OpenEndpoints() on an older database: %v", err)
+	}
+	defer db.Close()
+
+	got, err := db.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("List() returned %d, want the row written by the older build", len(got))
+	}
+	if got[0].Owner != "" || got[0].Name != "before sign-in" || got[0].Received != 7 {
+		t.Errorf("record = %+v, want it readable with no owner", got[0])
+	}
+
+	// And endpoints created from here on keep theirs.
+	if err := db.Save(Record{ID: "ep-new", Owner: "me@edspc.dev", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := map[string]string{}
+	for _, r := range got {
+		owners[r.ID] = r.Owner
+	}
+	if len(got) != 2 || owners["ep-new"] != "me@edspc.dev" || owners["ep-old"] != "" {
+		t.Errorf("after saving: %+v, want the new row to carry its owner and the old one none", got)
+	}
+}
