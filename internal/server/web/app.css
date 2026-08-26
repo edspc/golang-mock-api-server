@@ -196,6 +196,10 @@ code, pre, textarea, .url { font-family: var(--mono); }
 .spacer { flex: 1; }
 .check { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 5px; cursor: pointer; }
 .toolbar .filter { font-size: 13px; padding: 4px 6px; }
+.toolbar .filter-id { width: 300px; font-family: var(--mono); font-size: 12px; }
+/* The id and its Copy button, in an expanded request. */
+.id-row { display: flex; align-items: center; gap: 8px; }
+.id-row code { font-size: 12px; }
 /* A filter that is hiding requests has to look like one, or an empty list
    reads as lost traffic. */
 .toolbar .filter.is-set { border-color: var(--accent); color: var(--accent); }
@@ -217,7 +221,7 @@ button.primary:hover { filter: brightness(1.08); }
 button.danger { color: var(--err); }
 button.danger:hover { border-color: var(--err); }
 button.ghost { background: var(--panel); }
-input[type="text"], input[type="number"] {
+input[type="text"], input[type="number"], input[type="search"] {
   font: inherit;
   padding: 5px 8px;
   border-radius: var(--radius);

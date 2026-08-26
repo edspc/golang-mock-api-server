@@ -14,6 +14,8 @@ const POLL_MS = 3000;
 const SAFETY_TICKS = 5;
 // How long a burst of events is folded into one refresh.
 const COALESCE_MS = 250;
+// How long to wait for the rest of a pasted or typed request id.
+const TYPING_MS = 200;
 
 // The whole app can be mounted under a sub-path — an nginx `location /mockapi/`
 // proxying to the server's root — and the server has no way to know it was.
@@ -28,6 +30,7 @@ function href(serverPath) {
 const state = {
   endpoints: [],
   selectedId: null,
+  filterRequestID: '',
   filterMethod: '',
   filterStatus: '',
   filterInvalid: false,
@@ -62,6 +65,22 @@ function $(id) { return document.getElementById(id); }
 
 function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+// copyText copies a node's text. Clipboard access can be refused, so the
+// fallback selects the text and lets the user press Ctrl+C.
+async function copyText(node, message) {
+  try {
+    await navigator.clipboard.writeText(node.textContent);
+    toast(message);
+  } catch (e) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    toast('Press Ctrl+C to copy');
+  }
 }
 
 let toastTimer = null;
@@ -300,6 +319,7 @@ async function saveName() {
 // does the filtering, so the console can never disagree with what curl shows.
 function filterQuery() {
   const q = new URLSearchParams();
+  if (state.filterRequestID) q.set('requestId', state.filterRequestID);
   if (state.filterMethod) q.set('method', state.filterMethod);
   if (state.filterStatus) q.set('status', state.filterStatus);
   if (state.filterInvalid) q.set('invalid', 'true');
@@ -330,8 +350,19 @@ async function loadRequests() {
 
   renderRequests($('requests'), entries, {
     showValidation: true,
-    emptyText: query ? 'No captured request matches these filters.' : 'Nothing captured yet.',
+    emptyText: emptyRequestsText(query),
   });
+}
+
+// emptyRequestsText explains an empty list. A request id that finds nothing
+// is worth its own answer: the history is bounded, so the request may simply
+// have aged out rather than never having happened.
+function emptyRequestsText(query) {
+  if (!query) return 'Nothing captured yet.';
+  if (state.filterRequestID) {
+    return 'No captured request has that ID. It may have aged out of this endpoint\u2019s history.';
+  }
+  return 'No captured request matches these filters.';
 }
 
 // applyFilter re-reads the listing under the new filter. The cached copy is
@@ -388,6 +419,21 @@ function renderRequests(container, entries, opts) {
 
 function requestBody(entry, invalid) {
   const parts = [];
+
+  if (entry.id) {
+    const id = el('code', { text: entry.id });
+    parts.push(el('section', {}, [
+      el('h4', { text: 'Request ID' }),
+      el('div', { class: 'id-row' }, [
+        id,
+        el('button', {
+          class: 'ghost',
+          text: 'Copy',
+          onclick: (e) => { e.stopPropagation(); copyText(id, 'Request ID copied'); },
+        }),
+      ]),
+    ]));
+  }
 
   if (invalid) {
     parts.push(el('section', {}, [
@@ -917,21 +963,7 @@ function wire() {
     if (e.key === 'Escape') stopRename();
   });
 
-  $('copy-url').addEventListener('click', async () => {
-    const url = $('ep-url').textContent;
-    try {
-      await navigator.clipboard.writeText(url);
-      toast('URL copied');
-    } catch (e) {
-      // Clipboard access can be refused; select the text so Ctrl+C works.
-      const range = document.createRange();
-      range.selectNodeContents($('ep-url'));
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      toast('Press Ctrl+C to copy');
-    }
-  });
+  $('copy-url').addEventListener('click', () => copyText($('ep-url'), 'URL copied'));
 
   $('delete-endpoint').addEventListener('click', async () => {
     const ep = selectedEndpoint();
@@ -946,6 +978,30 @@ function wire() {
     } catch (e) {
       toast(e.message);
     }
+  });
+
+  // A request id identifies exactly one request, so any other filter can only
+  // hide it. Clear them rather than let a paste come back empty — visibly, in
+  // the controls themselves, not behind the user's back.
+  let idDebounce = null;
+  $('filter-id').addEventListener('input', (e) => {
+    const value = e.target.value.trim();
+    e.target.classList.toggle('is-set', value !== '');
+    if (value) {
+      state.filterMethod = '';
+      state.filterStatus = '';
+      state.filterInvalid = false;
+      for (const id of ['filter-method', 'filter-status']) {
+        $(id).value = '';
+        $(id).classList.remove('is-set');
+      }
+      $('filter-invalid').checked = false;
+    }
+    clearTimeout(idDebounce);
+    idDebounce = setTimeout(() => {
+      state.filterRequestID = value;
+      applyFilter();
+    }, TYPING_MS);
   });
 
   for (const [id, key] of [['filter-method', 'filterMethod'], ['filter-status', 'filterStatus']]) {

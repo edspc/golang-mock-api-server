@@ -38,6 +38,29 @@ func open(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// addColumn adds a column to an existing table, doing nothing when it is
+// already there. SQLite has no "ADD COLUMN IF NOT EXISTS", and a database
+// written by an older build must keep opening rather than fail on startup.
+func addColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query("SELECT 1 FROM pragma_table_info(?) WHERE name = ?", table, column)
+	if err != nil {
+		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
+	}
+	present := rows.Next()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
+	}
+	rows.Close()
+	if present {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
 /* ---------- endpoints ---------- */
 
 // Endpoints stores the endpoints a user created and the spec each one serves.
@@ -152,6 +175,7 @@ func OpenRequests(path string, limit int) (*Requests, error) {
 	const schema = `
 CREATE TABLE IF NOT EXISTS requests (
 	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	request_id        TEXT NOT NULL DEFAULT '',
 	endpoint_id       TEXT NOT NULL,
 	at                TEXT NOT NULL,
 	method            TEXT NOT NULL DEFAULT '',
@@ -167,6 +191,12 @@ CREATE INDEX IF NOT EXISTS requests_by_endpoint ON requests (endpoint_id, id)`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create requests schema: %w", err)
+	}
+	// Databases written before request ids existed keep their rows; those
+	// rows simply have no id to look up.
+	if err := addColumn(db, "requests", "request_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
 	}
 	if limit <= 0 {
 		limit = mock.DefaultRecorderCapacity
@@ -210,9 +240,9 @@ func (l *Log) Append(e mock.Entry) error {
 		return fmt.Errorf("encode validation errors: %w", err)
 	}
 	_, err = l.req.db.Exec(`
-INSERT INTO requests (endpoint_id, at, method, path, query, headers, body, rule, status, validation_errors)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.id, e.Time.UTC().Format(time.RFC3339Nano), e.Method, e.Path,
+INSERT INTO requests (request_id, endpoint_id, at, method, path, query, headers, body, rule, status, validation_errors)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, l.id, e.Time.UTC().Format(time.RFC3339Nano), e.Method, e.Path,
 		string(query), string(headers), e.Body, e.Rule, e.Status, string(errs))
 	if err != nil {
 		return fmt.Errorf("append request for %s: %w", l.id, err)
@@ -224,7 +254,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // configured limit.
 func (l *Log) Entries() ([]mock.Entry, error) {
 	rows, err := l.req.db.Query(`
-SELECT at, method, path, query, headers, body, rule, status, validation_errors
+SELECT request_id, at, method, path, query, headers, body, rule, status, validation_errors
 FROM requests WHERE endpoint_id = ? ORDER BY id DESC LIMIT ?`, l.id, l.req.limit)
 	if err != nil {
 		return nil, fmt.Errorf("list requests for %s: %w", l.id, err)
@@ -235,7 +265,7 @@ FROM requests WHERE endpoint_id = ? ORDER BY id DESC LIMIT ?`, l.id, l.req.limit
 	for rows.Next() {
 		var e mock.Entry
 		var at, query, headers, errs string
-		if err := rows.Scan(&at, &e.Method, &e.Path, &query, &headers, &e.Body, &e.Rule, &e.Status, &errs); err != nil {
+		if err := rows.Scan(&e.ID, &at, &e.Method, &e.Path, &query, &headers, &e.Body, &e.Rule, &e.Status, &errs); err != nil {
 			return nil, fmt.Errorf("scan request: %w", err)
 		}
 		if e.Time, err = time.Parse(time.RFC3339Nano, at); err != nil {

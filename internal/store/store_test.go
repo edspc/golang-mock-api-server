@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -130,6 +131,7 @@ func TestRequestsRoundTrip(t *testing.T) {
 	log := db.For("ep-1")
 	at := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	want := mock.Entry{
+		ID:               "01a03d40-2b0a-8000-ac90-a89c884021ee",
 		Time:             at,
 		Method:           "POST",
 		Path:             "/cb/ep-1",
@@ -152,6 +154,9 @@ func TestRequestsRoundTrip(t *testing.T) {
 		t.Fatalf("Entries() returned %d, want 1", len(got))
 	}
 	e := got[0]
+	if e.ID != want.ID {
+		t.Errorf("ID = %q, want %q: the id is how a caller finds this row again", e.ID, want.ID)
+	}
 	if !e.Time.Equal(at) || e.Method != want.Method || e.Path != want.Path || e.Body != want.Body ||
 		e.Rule != want.Rule || e.Status != want.Status {
 		t.Errorf("Entries()[0] = %+v, want %+v", e, want)
@@ -240,5 +245,68 @@ func TestDataSurvivesReopen(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "kept" {
 		t.Errorf("List() after reopen = %+v, want the saved endpoint", got)
+	}
+}
+
+// Request ids were added after the first release. A database written by an
+// older build has to keep opening: its rows simply have no id.
+func TestOpeningADatabaseWrittenWithoutRequestIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.db")
+
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = old.Exec(`
+CREATE TABLE requests (
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	endpoint_id       TEXT NOT NULL,
+	at                TEXT NOT NULL,
+	method            TEXT NOT NULL DEFAULT '',
+	path              TEXT NOT NULL DEFAULT '',
+	query             TEXT NOT NULL DEFAULT 'null',
+	headers           TEXT NOT NULL DEFAULT 'null',
+	body              TEXT NOT NULL DEFAULT '',
+	rule              TEXT NOT NULL DEFAULT '',
+	status            INTEGER NOT NULL DEFAULT 0,
+	validation_errors TEXT NOT NULL DEFAULT 'null'
+);
+INSERT INTO requests (endpoint_id, at, method, status)
+VALUES ('ep-1', '2026-08-24T12:00:00Z', 'POST', 202)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := OpenRequests(path, 10)
+	if err != nil {
+		t.Fatalf("OpenRequests() on an older database: %v", err)
+	}
+	defer db.Close()
+
+	log := db.For("ep-1")
+	got, err := log.Entries()
+	if err != nil {
+		t.Fatalf("Entries() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Entries() returned %d, want the row written by the older build", len(got))
+	}
+	if got[0].ID != "" || got[0].Status != 202 {
+		t.Errorf("entry = %+v, want it readable with an empty id", got[0])
+	}
+
+	// And new traffic gets an id from here on.
+	if err := log.Append(mock.Entry{ID: "01a03d40-2b0a-8000-ac90-a89c884021ee", Time: time.Now(), Status: 200}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	got, err = log.Entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[1].ID == "" {
+		t.Errorf("after appending: %+v, want the new row to carry its id", got)
 	}
 }
