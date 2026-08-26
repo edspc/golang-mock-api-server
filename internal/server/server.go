@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/edspc/golang-mock-api-server/internal/auth"
@@ -57,6 +58,17 @@ type Server struct {
 	assets    http.Handler
 	assetFS   fs.FS
 	index     []byte
+
+	// closing releases the open event streams. They are long-lived by design,
+	// so nothing else would end them in time for a graceful shutdown.
+	closing   chan struct{}
+	closeOnce sync.Once
+}
+
+// CloseStreams ends every open event stream. Wire it into shutdown —
+// http.Server.RegisterOnShutdown — before waiting for connections to drain.
+func (s *Server) CloseStreams() {
+	s.closeOnce.Do(func() { close(s.closing) })
 }
 
 // New builds a Server.
@@ -65,6 +77,7 @@ func New(opts Options) (*Server, error) {
 		endpoints: opts.Endpoints,
 		log:       opts.Logger,
 		auth:      opts.Auth,
+		closing:   make(chan struct{}),
 	}
 	if s.endpoints == nil {
 		s.endpoints = endpoint.NewRegistry(endpoint.DefaultHistory)

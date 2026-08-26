@@ -10,16 +10,33 @@
 // a literal here would silently break if the Go-side prefix moved.
 const API = document.querySelector('meta[name="api-base"]').content;
 const POLL_MS = 3000;
+// How many poll ticks to skip while the event stream is delivering updates.
+const SAFETY_TICKS = 5;
+// How long a burst of events is folded into one refresh.
+const COALESCE_MS = 250;
+
+// The whole app can be mounted under a sub-path — an nginx `location /mockapi/`
+// proxying to the server's root — and the server has no way to know it was.
+// Everything it hands back (the API prefix above, a callback URL, a sign-in
+// link) is written from *its* root, so resolve those against the page's own
+// base instead of the origin. At the site root this is the identity.
+const ROOT = new URL('.', document.baseURI);
+function href(serverPath) {
+  return new URL(String(serverPath).replace(/^\/+/, ''), ROOT).href;
+}
 
 const state = {
   endpoints: [],
   selectedId: null,
   filterInvalid: false,
   auto: true,
+  stream: null,
+  live: false,
   auth: true,
   expanded: new Set(),
   lastRequestsJSON: '',
   specDirty: false,
+  renaming: false,
 };
 
 /* ---------- small helpers ---------- */
@@ -62,7 +79,7 @@ async function api(method, path, rawBody) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = rawBody;
   }
-  const res = await fetch(path, init);
+  const res = await fetch(href(path), init);
   const text = await res.text();
   let data = null;
   if (text) {
@@ -88,7 +105,10 @@ async function api(method, path, rawBody) {
 // this — only the control API is guarded.
 function requireSignIn(loginPath) {
   state.auth = false;
-  $('signin-link').href = loginPath || `${API}/auth/login`;
+  // EventSource would otherwise reconnect to a route that now answers 401,
+  // over and over, for as long as the overlay is up.
+  stopEventStream();
+  $('signin-link').href = href(loginPath || `${API}/auth/login`);
   $('signin').hidden = false;
   $('account').hidden = true;
   // Hidden, not merely covered: an opaque overlay still leaves the console
@@ -99,7 +119,7 @@ function requireSignIn(loginPath) {
 async function loadAuth() {
   let status;
   try {
-    const res = await fetch(`${API}/auth/status`);
+    const res = await fetch(href(`${API}/auth/status`));
     status = await res.json();
   } catch (e) {
     return false; // the server is unreachable; loadHealth reports it
@@ -203,6 +223,7 @@ async function selectEndpoint(id) {
   state.selectedId = id;
   state.expanded.clear();
   state.lastRequestsJSON = '';
+  stopRename();
   renderEndpoints();
 
   const detail = $('endpoint-detail');
@@ -224,10 +245,52 @@ function renderEndpointHead() {
   const ep = selectedEndpoint();
   if (!ep) return;
   $('ep-name').textContent = ep.name || 'untitled endpoint';
-  $('ep-url').textContent = location.origin + ep.url;
+  // Rebased, not pinned to the origin: this is the URL the user copies and
+  // hands to a third party, so it has to include the mount point.
+  $('ep-url').textContent = href(ep.url);
   $('ep-id').textContent = ep.id;
   $('ep-created').textContent = formatTime(ep.createdAt);
   $('ep-received').textContent = ep.received;
+}
+
+/* ---------- rename ---------- */
+
+// Renaming is an explicit mode rather than an always-live input: the head is
+// re-rendered on every poll, which would fight with a half-typed name.
+function startRename() {
+  const ep = selectedEndpoint();
+  if (!ep || state.renaming) return;
+  state.renaming = true;
+  const input = $('rename-input');
+  input.value = ep.name || '';
+  $('name-display').hidden = true;
+  $('rename-form').hidden = false;
+  input.focus();
+  input.select();
+}
+
+function stopRename() {
+  state.renaming = false;
+  $('rename-form').hidden = true;
+  $('name-display').hidden = false;
+}
+
+async function saveName() {
+  const ep = selectedEndpoint();
+  if (!ep) return;
+  const name = $('rename-input').value;
+  try {
+    const updated = await api('PUT', `${API}/endpoints/${ep.id}/name`, JSON.stringify({ name }));
+    // The listing is polled, but update it now so the sidebar and the heading
+    // do not disagree for the next three seconds.
+    ep.name = updated.name || '';
+    stopRename();
+    renderEndpoints();
+    renderEndpointHead();
+    toast('Endpoint renamed');
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 /* ---------- requests ---------- */
@@ -825,6 +888,16 @@ function wire() {
     }
   });
 
+  $('rename-endpoint').addEventListener('click', startRename);
+  $('rename-cancel').addEventListener('click', stopRename);
+  $('rename-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveName();
+  });
+  $('rename-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') stopRename();
+  });
+
   $('copy-url').addEventListener('click', async () => {
     const url = $('ep-url').textContent;
     try {
@@ -844,7 +917,7 @@ function wire() {
   $('delete-endpoint').addEventListener('click', async () => {
     const ep = selectedEndpoint();
     if (!ep) return;
-    if (!confirm(`Delete this endpoint and everything it captured?\n\n${ep.url}`)) return;
+    if (!confirm(`Delete this endpoint and everything it captured?\n\n${href(ep.url)}`)) return;
     try {
       await api('DELETE', `${API}/endpoints/${ep.id}`);
       selectEndpoint(null);
@@ -942,21 +1015,110 @@ function wire() {
   });
 }
 
-async function poll() {
-  if (!state.auto || document.hidden || !state.auth) return;
+/* ---------- live updates ---------- */
+
+// The console is driven by a server-sent event stream: the server says what
+// changed and the console re-reads it over the ordinary API. Polling stays as
+// a slow reconciliation pass — it is also what notices a session that expired
+// while the stream sat idle, which EventSource has no way to report.
+function startEventStream() {
+  if (state.stream || !window.EventSource) return;
+  let stream;
+  try {
+    stream = new EventSource(href(`${API}/events`));
+  } catch (e) {
+    return; // the poll below keeps the console working without a stream
+  }
+  state.stream = stream;
+  stream.onopen = () => setLive(true);
+  stream.onerror = () => {
+    // EventSource reconnects on its own; until it does, the poll covers.
+    setLive(false);
+  };
+  stream.onmessage = (e) => {
+    let ev = null;
+    try { ev = JSON.parse(e.data); } catch (err) { return; }
+    onServerEvent(ev);
+  };
+}
+
+function stopEventStream() {
+  if (state.stream) {
+    state.stream.close();
+    state.stream = null;
+  }
+  setLive(false);
+}
+
+function setLive(live) {
+  state.live = live;
+  $('live').hidden = !live;
+}
+
+// onServerEvent decides how much to re-read. A deleted or created endpoint
+// changes the listing; a request changes the selected endpoint's history.
+function onServerEvent(ev) {
+  if (!state.auto || !state.auth) return;
+  scheduleRefresh(ev && ev.endpoint === state.selectedId &&
+    (ev.type === 'request' || ev.type === 'reset'));
+}
+
+// A busy endpoint produces events far faster than the console can render them,
+// so refreshes are coalesced: the first event schedules one pass and the rest
+// of the burst folds into it.
+let refreshPending = null;
+function scheduleRefresh(withRequests) {
+  if (refreshPending) {
+    refreshPending.requests = refreshPending.requests || withRequests;
+    return;
+  }
+  refreshPending = { requests: withRequests };
+  setTimeout(() => {
+    const want = refreshPending;
+    refreshPending = null;
+    refresh(want.requests).catch(() => {});
+  }, COALESCE_MS);
+}
+
+// refresh re-reads whatever the console is showing. Requests are reloaded only
+// when asked for: the listing alone is enough to update the counters.
+async function refresh(withRequests) {
+  if (!state.auth || document.hidden) return;
   await loadHealth();
   const previous = state.selectedId;
   await loadEndpoints();
   if (previous && state.selectedId === previous) {
     renderEndpointHead();
-    await loadRequests();
+    if (withRequests) await loadRequests();
   }
+}
+
+async function poll() {
+  if (!state.auto || document.hidden || !state.auth) return;
+  await refresh(true);
 }
 
 wire();
 loadAuth().then((signedIn) => {
   if (!signedIn) return;
   loadHealth();
-  loadEndpoints().catch((e) => { if (!e.unauthorized) toast(e.message); });
+  loadEndpoints()
+    .then(startEventStream)
+    .catch((e) => { if (!e.unauthorized) toast(e.message); });
 });
-setInterval(() => { poll().catch(() => {}); }, POLL_MS);
+
+// With the stream live the poll is only a safety net, so it runs far less
+// often — but it never stops: it is the one thing that notices a lost session
+// or a server restart.
+let ticks = 0;
+setInterval(() => {
+  ticks += 1;
+  if (state.live && ticks % SAFETY_TICKS !== 0) return;
+  poll().catch(() => {});
+}, POLL_MS);
+
+// Nothing is refreshed while the tab is hidden, so catch up on the way back
+// rather than leaving stale traffic on screen until the next tick.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) poll().catch(() => {});
+});

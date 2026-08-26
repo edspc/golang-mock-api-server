@@ -15,6 +15,7 @@
   <div class="brand">
     <span class="logo">mockapi</span>
     <span class="health" id="health"></span>
+    <span class="live" id="live" title="Receiving live updates" hidden>live</span>
   </div>
   <span class="spacer"></span>
   <span class="account" id="account" hidden>
@@ -54,7 +55,15 @@
       <div id="endpoint-detail" hidden>
         <div class="detail-head">
           <div>
-            <h2 id="ep-name"></h2>
+            <div class="name-row" id="name-display">
+              <h2 id="ep-name"></h2>
+              <button id="rename-endpoint" class="ghost" title="Rename this endpoint">Rename</button>
+            </div>
+            <form class="name-row" id="rename-form" hidden>
+              <input id="rename-input" type="text" maxlength="200" placeholder="Name (optional)" autocomplete="off">
+              <button type="submit" class="primary">Save</button>
+              <button type="button" id="rename-cancel" class="ghost">Cancel</button>
+            </form>
             <div class="url-row">
               <code id="ep-url" class="url"></code>
               <button id="copy-url" class="ghost" title="Copy full URL">Copy</button>
@@ -76,7 +85,7 @@
         <div id="tab-requests" class="tabpanel is-active">
           <div class="toolbar">
             <label class="check"><input type="checkbox" id="filter-invalid"> Failed validation only</label>
-            <label class="check"><input type="checkbox" id="auto-refresh" checked> Auto-refresh</label>
+            <label class="check"><input type="checkbox" id="auto-refresh" checked> Live updates</label>
             <span class="spacer"></span>
             <button id="refresh-requests" class="ghost">Refresh</button>
             <button id="reset-requests" class="ghost">Clear history</button>

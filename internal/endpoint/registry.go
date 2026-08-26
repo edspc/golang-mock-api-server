@@ -47,6 +47,10 @@ type Registry struct {
 	historyFor func(id string) History
 	store      Store
 	log        *slog.Logger
+
+	// events notifies live subscribers — the console's stream — of anything
+	// that changes what they are showing.
+	events broker
 }
 
 // NewRegistry returns an empty, memory-only Registry whose endpoints keep
@@ -116,15 +120,19 @@ func (r *Registry) Restore() error {
 	return nil
 }
 
-// attach wires an endpoint's persistence hooks. Failures are logged rather
-// than returned: a callback still has to be answered.
+// attach wires an endpoint's hooks: change notifications always, persistence
+// only when a store is configured. Persistence failures are logged rather than
+// returned: a callback still has to be answered.
 func (r *Registry) attach(e *Endpoint) {
+	e.onEvent = func(ep *Endpoint, kind string) {
+		r.publish(ep, kind)
+	}
 	if r.store == nil {
 		return
 	}
-	e.onSpec = func(ep *Endpoint) {
+	e.onSave = func(ep *Endpoint) {
 		if err := r.store.Save(r.record(ep)); err != nil {
-			r.log.Error("persist endpoint spec", "id", ep.ID.String(), "error", err)
+			r.log.Error("persist endpoint settings", "id", ep.ID.String(), "error", err)
 		}
 	}
 	e.onRecv = func(ep *Endpoint) {
@@ -142,7 +150,7 @@ func (r *Registry) record(e *Endpoint) Stored {
 	}
 	return Stored{
 		ID:        e.ID.String(),
-		Name:      e.Name,
+		Name:      e.Name(),
 		CreatedAt: e.CreatedAt,
 		Spec:      spec,
 		Received:  e.Received(),
@@ -169,8 +177,10 @@ func (r *Registry) Create(name string) (*Endpoint, error) {
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.byID[e.ID] = e
+	r.mu.Unlock()
+
+	r.publish(e, EventCreated)
 	return e, nil
 }
 
@@ -205,7 +215,9 @@ func (r *Registry) Delete(id string) error {
 	r.mu.Unlock()
 
 	// Drop the captured traffic too, so a stored request log does not outlive
-	// the endpoint it belongs to.
+	// the endpoint it belongs to. Detached first: the endpoint is already gone
+	// from the registry, and a "reset" event for it would be noise.
+	e.onEvent = nil
 	e.history.Reset()
 
 	if r.store != nil {
@@ -213,6 +225,7 @@ func (r *Registry) Delete(id string) error {
 			r.log.Error("delete stored endpoint", "id", id, "error", err)
 		}
 	}
+	r.publish(e, EventDeleted)
 	return nil
 }
 

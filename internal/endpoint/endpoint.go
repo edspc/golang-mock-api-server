@@ -65,24 +65,65 @@ type History interface {
 	Reset()
 }
 
+// MaxNameLength caps an endpoint name. Names are a convenience label, and an
+// unbounded one would be stored and re-sent on every listing.
+const MaxNameLength = 200
+
 // Endpoint is one callback URL and everything captured on it.
 type Endpoint struct {
-	ID        uuid.UUID `json:"-"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID        uuid.UUID
+	CreatedAt time.Time
 
-	// mu guards spec and rules, which are replaced together on every update.
+	// mu guards name, spec and rules. The name is mutable — it is read on
+	// every listing while a rename may be in flight — so it lives behind the
+	// lock rather than in an exported field.
 	mu    sync.RWMutex
+	name  string
 	spec  Spec
 	rules []*mock.Rule
 
 	history  History
 	received atomic.Int64
 
-	// onSpec and onRecv let the Registry persist changes. They are separate
-	// because a callback must not rewrite the spec on every request.
-	onSpec func(*Endpoint)
+	// onSave and onRecv let the Registry persist changes. They are separate
+	// because a callback must not rewrite the settings on every request.
+	onSave func(*Endpoint)
 	onRecv func(*Endpoint)
+	// onEvent announces a change to live subscribers. Unlike the two above it
+	// is wired whether or not anything is being persisted.
+	onEvent func(*Endpoint, string)
+}
+
+func (e *Endpoint) announce(kind string) {
+	if e.onEvent != nil {
+		e.onEvent(e, kind)
+	}
+}
+
+// Name returns the endpoint's label.
+func (e *Endpoint) Name() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.name
+}
+
+// SetName relabels the endpoint. The empty string is allowed and means
+// untitled; the URL never changes, so renaming cannot break a caller.
+func (e *Endpoint) SetName(name string) error {
+	name = strings.TrimSpace(name)
+	if len(name) > MaxNameLength {
+		return fmt.Errorf("name is %d characters, the maximum is %d", len(name), MaxNameLength)
+	}
+
+	e.mu.Lock()
+	e.name = name
+	e.mu.Unlock()
+
+	if e.onSave != nil {
+		e.onSave(e)
+	}
+	e.announce(EventUpdated)
+	return nil
 }
 
 // New creates an endpoint with a fresh UUIDv8, an empty spec and an in-memory
@@ -96,7 +137,7 @@ func New(name string, history int) (*Endpoint, error) {
 }
 
 func newEndpoint(id uuid.UUID, name string, created time.Time, h History) *Endpoint {
-	return &Endpoint{ID: id, Name: name, CreatedAt: created, history: h}
+	return &Endpoint{ID: id, name: name, CreatedAt: created, history: h}
 }
 
 // Spec returns the endpoint's current behaviour.
@@ -136,9 +177,10 @@ func (e *Endpoint) SetSpec(spec Spec) error {
 	e.rules = rules
 	e.mu.Unlock()
 
-	if e.onSpec != nil {
-		e.onSpec(e)
+	if e.onSave != nil {
+		e.onSave(e)
 	}
+	e.announce(EventUpdated)
 	return nil
 }
 
@@ -170,7 +212,10 @@ func (e *Endpoint) Requests() []mock.Entry { return e.history.Entries() }
 
 // ResetRequests clears the captured history. The received counter is left
 // alone: it reports lifetime traffic, not history size.
-func (e *Endpoint) ResetRequests() { e.history.Reset() }
+func (e *Endpoint) ResetRequests() {
+	e.history.Reset()
+	e.announce(EventReset)
+}
 
 // Outcome is what an endpoint decided to do with one callback.
 type Outcome struct {
@@ -258,6 +303,7 @@ func (e *Endpoint) record(r *http.Request, body []byte, out Outcome) {
 	if e.onRecv != nil {
 		e.onRecv(e)
 	}
+	e.announce(EventRequest)
 }
 
 // check returns every reason the request is invalid, so the user fixing their

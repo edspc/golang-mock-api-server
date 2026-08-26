@@ -87,7 +87,7 @@ type endpointView struct {
 func viewOf(e *endpoint.Endpoint) endpointView {
 	return endpointView{
 		ID:        e.ID.String(),
-		Name:      e.Name,
+		Name:      e.Name(),
 		URL:       CallbackPrefix + e.ID.String(),
 		CreatedAt: e.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
 		Received:  e.Received(),
@@ -121,7 +121,7 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 				return
 			}
 		}
-		s.log.Info("endpoint created", "id", ep.ID.String(), "name", ep.Name)
+		s.log.Info("endpoint created", "id", ep.ID.String(), "name", ep.Name())
 		writeJSON(w, http.StatusCreated, viewOf(ep))
 	})
 
@@ -148,6 +148,31 @@ func (s *Server) registerEndpointAdmin(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	})
+
+	// Renaming touches only the label. The URL is the endpoint's identity and
+	// never changes, so a rename cannot break a third party already calling it.
+	mux.HandleFunc("PUT "+AdminPrefix+"endpoints/{id}/name", func(w http.ResponseWriter, r *http.Request) {
+		ep, ok := s.lookup(w, r)
+		if !ok {
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parse name: " + err.Error()})
+			return
+		}
+		was := ep.Name()
+		if err := ep.SetName(req.Name); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		s.log.Info("endpoint renamed", "id", ep.ID.String(), "from", was, "to", ep.Name())
+		writeJSON(w, http.StatusOK, viewOf(ep))
 	})
 
 	// PUT replaces the whole spec: rules, validation, and default response.
