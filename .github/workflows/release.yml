@@ -26,30 +26,13 @@ jobs:
       - name: Test
         run: go test ./... -race -count=1
 
-      # CGO_ENABLED=0 is what makes this a plain cross-compile loop rather than
-      # a matrix of runners: the SQLite driver is pure Go.
+      # `make dist` cross-compiles every target and writes one SHA256SUMS
+      # covering them, so a download can be verified without trusting the
+      # release page. The flags live in the Makefile rather than here: running
+      # the same target locally is what keeps a published binary and one built
+      # by hand identical.
       - name: Build
-        env:
-          CGO_ENABLED: "0"
-          VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          for target in linux/amd64 linux/arm64 darwin/arm64; do
-            os="${target%/*}"
-            arch="${target#*/}"
-
-            echo "building $target"
-            GOOS="$os" GOARCH="$arch" go build \
-              -trimpath \
-              -ldflags "-s -w -X main.version=${VERSION}" \
-              -o "dist/mockapi_${VERSION}_${os}_${arch}" ./cmd/mockapi
-          done
-
-          # One checksum file covering every binary, so a download can be
-          # verified without trusting the release page.
-          (cd dist && sha256sum ./* > SHA256SUMS)
-          ls -l dist
+        run: make dist VERSION="${{ github.ref_name }}"
 
       - name: Publish
         env:

@@ -338,6 +338,7 @@ are also exposed under dash-free aliases (`X-Api-Key` → `XApiKey`, `*` →
 make test          # go test ./...
 make lint          # go vet + gofmt check
 make cover         # coverage summary
+make dist          # the release binaries, exactly as a tag would build them
 ```
 
 ## Releases
@@ -359,6 +360,15 @@ chmod +x mockapi_v0.1.0_linux_amd64
 ```
 
 `mockapi -version` reports the tag it was built from.
+
+The workflow builds them by running `make dist`, so you can produce the same
+binaries locally — static, path-stripped and byte-for-byte reproducible:
+
+```sh
+make dist                                   # all three targets, into dist/
+make dist VERSION=v0.1.0                    # stamp a version
+make dist TARGETS=linux/amd64               # just the one you need
+```
 
 ## License
 
